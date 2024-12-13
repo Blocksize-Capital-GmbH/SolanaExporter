@@ -8,6 +8,10 @@ on:
         branches:
             - "main"
 
+permissions:
+  packages: write
+  contents: read
+
 jobs:
     lint:
         uses: ./.github/workflows/lint.yml
