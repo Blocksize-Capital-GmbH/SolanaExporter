@@ -1,0 +1,157 @@
+ci:
+    autofix_commit_msg: "chore(pre-commit.ci): auto fixes"
+    autofix_prs: true
+    autoupdate_commit_msg: "chore(pre-commit.ci): pre-commit autoupdate"
+
+repos:
+    # Enforce conventional commit messages with commitizen
+    - repo: https://github.com/commitizen-tools/commitizen
+      rev: v3.31.0
+      hooks:
+          - id: commitizen
+            stages: [commit-msg]
+
+    # Ensure Poetry configurations are valid
+    - repo: https://github.com/python-poetry/poetry
+      rev: 1.8.0
+      hooks:
+          - id: poetry-check
+            additional_dependencies: [poetry==1.8.2]
+            stages: [commit-msg]
+
+    # Auto-format Python code with autopep8
+    - repo: https://github.com/hhatto/autopep8
+      rev: v2.3.1
+      hooks:
+          - id: autopep8
+
+    # Prettier for non-Python files (e.g., JSON, YAML)
+    - repo: https://github.com/pre-commit/mirrors-prettier
+      rev: v4.0.0-alpha.8
+      hooks:
+          - id: prettier
+            args: ["--tab-width", "4"]
+
+    # Upgrade Python syntax for the specified version
+    - repo: https://github.com/asottile/pyupgrade
+      rev: v3.19.0
+      hooks:
+          - id: pyupgrade
+            args: [--py37-plus]
+
+    # Ensure imports are sorted and formatted correctly
+    - repo: https://github.com/PyCQA/isort
+      rev: 5.13.2
+      hooks:
+          - id: isort
+
+    # Black for consistent Python code formatting
+    - repo: https://github.com/psf/black-pre-commit-mirror
+      rev: 24.10.0
+      hooks:
+          - id: black
+            language_version: python3.12
+            exclude: .*ipynb
+
+    - repo: https://github.com/codespell-project/codespell
+      rev: v2.3.0
+      hooks:
+          - id: codespell
+            args:
+                - --ignore-words-list=assertIn
+            exclude: ^notebooks/|^dataProvidersJobSpecs/|^poetry.lock
+
+    # Remove unused imports and variables
+    - repo: https://github.com/PyCQA/autoflake
+      rev: v2.3.1
+      hooks:
+          - id: autoflake
+
+    # Lint Python code with flake8
+    - repo: https://github.com/PyCQA/flake8
+      rev: 7.1.1
+      hooks:
+          - id: flake8
+
+    # Detect security issues with Bandit
+    - repo: https://github.com/PyCQA/bandit
+      rev: 1.7.10
+      hooks:
+          - id: bandit
+            args: ["-x", "tests", "-c", "pyproject.toml"]
+
+    # Additional pre-commit hooks
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v5.0.0
+      hooks:
+          - id: end-of-file-fixer
+            exclude: ^node_modules/
+          - id: trailing-whitespace
+            exclude: ^node_modules/
+          - id: check-json
+            exclude: ^node_modules/
+          - id: debug-statements
+
+    # Local hooks for testing and additional checks
+    - repo: local
+      hooks:
+          # Run pytest for all test cases
+          - id: pytest
+            name: pytest
+            entry: poetry run pytest
+            language: system
+            types: [python]
+            pass_filenames: false
+            always_run: true
+            exclude: "(venv|\\.venv)"
+            args: ["--disable-warnings", "--no-cov"]
+
+          # Run pytest with coverage analysis
+          - id: pytest-cov
+            name: pytest-cov
+            args:
+                [
+                    "-v",
+                    "--cov=solanaexporter",
+                    "--color=yes",
+                    "--code-highlight=yes",
+                    "--cov-report=term",
+                    "--cov-report=html",
+                    "--cov-config=.coveragerc",
+                ]
+            entry: poetry run pytest
+            language: system
+            types: [python]
+            pass_filenames: false
+            always_run: true
+            exclude: "(venv|\\.venv)"
+
+          # Type checking with mypy
+          - id: mypy
+            name: mypy
+            entry: poetry run mypy
+            language: system
+            types: [python]
+            args:
+                [
+                    "--ignore-missing-imports",
+                    "--explicit-package-bases",
+                    "--non-interactive",
+                    "--check-untyped-defs",
+                    "solanaexporter/",
+                    "solanaexporter/tests/",
+                ]
+            pass_filenames: false
+            fail_fast: false # Allows warnings instead of failing
+            stages: [manual] # Optional: Run outside the main CI pipeline
+
+          # Check docstring formatting
+          - id: check-docstring
+            name: check-docstring
+            entry: poetry run pydocstyle
+            language: system
+            types: [python]
+            args: ["--convention=google"]
+            pass_filenames: false
+            fail_fast: false # Allows warnings instead of failing
+            stages: [manual] # Optional: Run outside the main CI pipeline

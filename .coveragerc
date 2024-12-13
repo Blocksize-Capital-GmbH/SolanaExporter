@@ -1,0 +1,14 @@
+[paths]
+source =
+   solanaexporter
+
+[run]
+branch = true
+parallel = true
+
+[html]
+directory = coverage
+
+[report]
+show_missing = true
+precision = 2

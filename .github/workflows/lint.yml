@@ -1,0 +1,29 @@
+name: Lint
+
+on:
+    workflow_call:
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout Code
+              uses: actions/checkout@v3
+
+            - name: Setup Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: 3.12
+
+            - name: Install Dependencies
+              run: |
+                  pip install poetry
+                  poetry install -vv
+
+            - name: Run Linting
+              run: |
+                  poetry run pre-commit run black --all-files
+                  poetry run pre-commit run isort --all-files
+                  poetry run pre-commit run flake8 --all-files
+                  poetry run pre-commit run codespell --all-files
