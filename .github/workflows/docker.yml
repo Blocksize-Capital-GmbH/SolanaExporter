@@ -18,10 +18,10 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout Code
-              uses: actions/checkout@v3
+              uses: actions/checkout@v4
 
             - name: Log in to GitHub Container Registry
-              uses: docker/login-action@v2
+              uses: docker/login-action@v4
               with:
                   registry: ghcr.io
                   username: ${{ github.actor }}
@@ -48,5 +48,5 @@ jobs:
                 curl -X PATCH \
                   -H "Accept: application/vnd.github+json" \
                   -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME \
+                  https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME/visibility \
                   -d '{"visibility":"public"}'
