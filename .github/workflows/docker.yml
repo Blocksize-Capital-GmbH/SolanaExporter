@@ -37,3 +37,15 @@ jobs:
               run: |
                   docker push ghcr.io/blocksize-capital-gmbh/solanaexporter:latest
                   docker push ghcr.io/blocksize-capital-gmbh/solanaexporter:${{ github.sha }}
+
+            - name: Set Package Visibility to Public
+              env:
+                GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                PACKAGE_NAME="solanaexporter"
+                OWNER="blocksize-capital-gmbh"
+                curl -X PATCH \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "Authorization: Bearer $GITHUB_TOKEN" \
+                  https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME \
+                  -d '{"visibility":"public"}'
