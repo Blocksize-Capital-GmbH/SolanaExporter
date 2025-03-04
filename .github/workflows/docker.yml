@@ -48,5 +48,5 @@ jobs:
                 curl -X PATCH \
                   -H "Accept: application/vnd.github+json" \
                   -H "Authorization: Bearer $GITHUB_TOKEN" \
-                  https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME/visibility \
+                  https://api.github.com/orgs/$OWNER/packages/container/$PACKAGE_NAME \
                   -d '{"visibility":"public"}'
