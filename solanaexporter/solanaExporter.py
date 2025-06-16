@@ -80,6 +80,11 @@ class SolanaExporter(RPCExporter):
             "Block production status (1 for success, 0 for failure)",
             registry=self.registry,
         )
+        self.credits_earned = Gauge(
+            "solana_credits_earned",
+            "Total vote credits earned by the validator",
+            registry=self.registry,
+        )
 
         self.programAccountsCallCounter: int = -1
         self.stake_accounts: List[JsonRPCResponse] = []
@@ -104,8 +109,12 @@ class SolanaExporter(RPCExporter):
         ]
 
         responses: List[JsonRPCResponse] = self._batched_rpc_call(rpc_requests)
-        if not responses:
-            self.logger.warning("No responses received from batched RPC call.")
+        if not responses or len(responses) != len(rpc_requests):
+            self.logger.error(
+                "RPC call failed or incomplete batch, setting health_status to 0 and other metrics to NaN"
+            )
+            self.health_status.set(0)
+            self.sync_status.set(0)
             return
 
         vote_accounts_result = None
@@ -130,6 +139,7 @@ class SolanaExporter(RPCExporter):
                 self.logger.debug(f"Updated balance: {balance}")
             elif idx == 2:  # getVoteAccounts
                 self._update_stake_metrics(vote_accounts=result)
+                self._update_credits_earned(result)
                 vote_accounts_result = result
             elif idx == 3:  # getEpochInfo
                 absolute_slot_value = result.get("absoluteSlot", 0)
@@ -295,6 +305,17 @@ class SolanaExporter(RPCExporter):
             self.logger.warning(
                 "Could not update missed slots: block production stats missing or malformed"
             )
+
+    def _update_credits_earned(self, vote_accounts_result):
+        """Update the credits_earned metric."""
+        credits = 0
+        for account in vote_accounts_result.get("current", []):
+            if account.get("votePubkey") == self.config.vote_pubkey:
+                epoch_credits = account.get("epochCredits", [])
+                credits = sum(ec[1] - ec[2] for ec in epoch_credits if len(ec) == 3)
+                break
+        self.credits_earned.set(credits)
+        self.logger.debug(f"Updated credits earned: {credits}")
 
 
 if __name__ == "__main__":
