@@ -127,6 +127,9 @@ class SolanaExporter(RPCExporter):
                 self.logger.error(
                     f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}"
                 )
+                if idx == 6:
+                    self.health_status.set(0)
+                    self.sync_status.set(0)
                 continue
             result = response.result
 
