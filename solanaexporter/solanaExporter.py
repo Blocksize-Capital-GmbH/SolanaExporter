@@ -94,19 +94,24 @@ class SolanaExporter(RPCExporter):
             self.programAccountsCallCounter = 0
 
         rpc_requests: List[JsonRPCRequest] = [
-            JsonRPCRequest("getSlot", params=[]),  # For slot_number
-            JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),  # For balance
-            JsonRPCRequest("getVoteAccounts", params=[]),  # For vote and delinquent metrics
-            JsonRPCRequest("getEpochInfo", params=[]),  # For epoch and slot time
-            JsonRPCRequest("getLeaderSchedule", params=[]),  # For leader status
-            JsonRPCRequest("getBlockProduction", params=[]),  # For block production
-            JsonRPCRequest("getHealth", params=[]),  # For health status
+            JsonRPCRequest("getSlot"),
+            JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),
+            JsonRPCRequest("getVoteAccounts"),
+            JsonRPCRequest("getEpochInfo"),
+            JsonRPCRequest("getLeaderSchedule"),
+            JsonRPCRequest("getBlockProduction"),
+            JsonRPCRequest("getHealth"),
         ]
 
         responses: List[JsonRPCResponse] = self._batched_rpc_call(rpc_requests)
         if not responses:
             self.logger.warning("No responses received from batched RPC call.")
             return
+
+        vote_accounts_result = None
+        epoch_info_result = None
+        slot_value = None
+        absolute_slot_value = None
 
         for idx, response in enumerate(iterable=responses):
             if response.error:
@@ -117,48 +122,63 @@ class SolanaExporter(RPCExporter):
             result = response.result
 
             if idx == 0:  # getSlot
+                slot_value = result
                 self._update_slot_metrics(current_slot=result)
-
             elif idx == 1:  # getBalance
                 balance = result.get("value", 0) / 1_000_000_000
                 self.balance.set(balance)
                 self.logger.debug(f"Updated balance: {balance}")
-
             elif idx == 2:  # getVoteAccounts
                 self._update_stake_metrics(vote_accounts=result)
-
+                vote_accounts_result = result
             elif idx == 3:  # getEpochInfo
+                absolute_slot_value = result.get("absoluteSlot", 0)
                 self._update_epoch_metrics(epoch_info=result)
-
+                epoch_info_result = result
             elif idx == 4:  # getLeaderSchedule
                 is_leader: bool = self.config.vote_pubkey in result
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
-
             elif idx == 5:  # getBlockProduction
                 self._update_block_production_metrics(block_production_data=result)
-
             elif idx == 6:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
                 self.logger.debug(msg=f"Updated health status: {health}")
 
+        # Calculate slot_lag and sync_status using values from the same probe
+        if slot_value is not None and absolute_slot_value is not None:
+            self._update_slot_lag_and_sync_status(slot_value, absolute_slot_value)
+
+        self._update_vote_distance(vote_accounts_result, epoch_info_result)
+
+    def _update_slot_lag_and_sync_status(self, slot_value, absolute_slot_value):
+        """Update slot_lag and sync_status metrics using values from the same probe."""
+        slot_lag = abs(slot_value - absolute_slot_value)
+        self.slot_lag.set(slot_lag)
+        self.sync_status.set(1 if slot_lag <= 64 else 0)
+        self.logger.debug(
+            f"Updated slot lag (same probe): {slot_lag}, sync status: {1 if slot_lag <= 64 else 0}"
+        )
+
+    def _update_vote_distance(self, vote_accounts_result, epoch_info_result):
+        """Update the vote distance metric."""
+        if not vote_accounts_result or not epoch_info_result:
+            return
+        highest_vote = 0
+        for account in vote_accounts_result.get("current", []):
+            if account.get("votePubkey") == self.config.vote_pubkey:
+                highest_vote = account.get("lastVote", 0)
+                break
+        highest_known_slot = epoch_info_result.get("absoluteSlot", 0)
+        vote_distance = highest_known_slot - highest_vote if highest_vote else 0
+        self.vote_distance.set(vote_distance)
+        self.logger.debug(f"Updated vote distance: {vote_distance}")
+
     def _update_slot_metrics(self, current_slot):
         """Update slot-related metrics."""
         self.slot_number.set(current_slot)
-
-        # Compute sync status based on the difference between current slot and the network's highest slot.
-        last_slot_difference = (
-            abs(current_slot - self.last_absolute_slot) if self.last_absolute_slot else 0
-        )
-        self.slot_lag.set(last_slot_difference)
-        self.sync_status.set(
-            1 if last_slot_difference <= 64 else 0
-        )  # Node is synced if slot difference is <= 64
-
-        self.logger.debug(
-            f"Updated slot number: {current_slot}, sync status: {1 if last_slot_difference <= 64 else 0}"
-        )
+        self.logger.debug(f"Updated slot number: {current_slot}")
 
     def _get_stake_accounts(self) -> List[JsonRPCResponse]:
         """Query stake accounts using the public RPC endpoint."""
@@ -260,9 +280,21 @@ class SolanaExporter(RPCExporter):
             .get("byIdentity", {})
             .get(self.config.validator_pubkey, [])
         )
-        block_success = 1 if production_stats and production_stats[1] > 0 else 0
-        self.block_production_success.set(block_success)
-        self.logger.debug(f"Updated block production success: {block_success}")
+        if production_stats and len(production_stats) == 2:
+            leader_slots = production_stats[0]
+            blocks_produced = production_stats[1]
+            missed_slots = leader_slots - blocks_produced
+            self.missed_slots.set(missed_slots)
+            self.logger.debug(f"Updated missed slots: {missed_slots}")
+            block_success = 1 if blocks_produced > 0 else 0
+            self.block_production_success.set(block_success)
+            self.logger.debug(f"Updated block production success: {block_success}")
+        else:
+            self.missed_slots.set(0)
+            self.block_production_success.set(0)
+            self.logger.warning(
+                "Could not update missed slots: block production stats missing or malformed"
+            )
 
 
 if __name__ == "__main__":
