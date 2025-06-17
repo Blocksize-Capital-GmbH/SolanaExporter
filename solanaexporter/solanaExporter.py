@@ -101,7 +101,7 @@ class SolanaExporter(RPCExporter):
         rpc_requests: List[JsonRPCRequest] = [
             JsonRPCRequest("getSlot"),
             JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),
-            JsonRPCRequest("getVoteAccounts"),
+            JsonRPCRequest("getVoteAccounts", params=[{"votePubkey": self.config.vote_pubkey}]),
             JsonRPCRequest("getEpochInfo"),
             JsonRPCRequest("getLeaderSchedule"),
             JsonRPCRequest("getBlockProduction"),
