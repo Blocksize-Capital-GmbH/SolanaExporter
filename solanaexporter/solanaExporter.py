@@ -230,26 +230,51 @@ class SolanaExporter(RPCExporter):
         return accounts
 
     def _update_stake_metrics(self, vote_accounts) -> None:
-        """Update stake-related metrics."""
+        """Update stake-related metrics with full validation and fallback defaults."""
+        # Safety: vote_accounts must be a valid dict
+        if not isinstance(vote_accounts, dict):
+            self.logger.warning("Invalid vote_accounts structure, resetting stake metrics to 0")
+            self.total_delegated_stake.set(0)
+            self.delinquent_stake.set(0)
+            self.pending_stake.set(0)
+            return
+
         current_accounts = vote_accounts.get("current", [])
         delinquent_accounts = vote_accounts.get("delinquent", [])
 
-        # Total delegated stake for this validator
-        total_stake = sum(
-            account.get("activatedStake", 0) / 1_000_000_000
-            for account in current_accounts
-            if account["votePubkey"] == self.config.vote_pubkey
-        )
+        # Validate current_accounts list
+        if isinstance(current_accounts, list):
+            total_stake = sum(
+                account.get("activatedStake", 0) / 1_000_000_000
+                for account in current_accounts
+                if account.get("votePubkey") == self.config.vote_pubkey
+            )
+        else:
+            total_stake = 0
+            self.logger.warning(
+                "current_accounts missing or malformed — setting total delegated stake to 0"
+            )
+
         self.total_delegated_stake.set(total_stake)
+        self.logger.debug(f"Updated total delegated stake: {total_stake}")
 
-        # Delinquent stake across all validators
-        total_delinquent_stake = sum(
-            account.get("activatedStake", 0) / 1_000_000_000 for account in delinquent_accounts
-        )
+        # Validate delinquent_accounts list
+        if isinstance(delinquent_accounts, list):
+            total_delinquent_stake = sum(
+                account.get("activatedStake", 0) / 1_000_000_000
+                for account in delinquent_accounts
+            )
+        else:
+            total_delinquent_stake = 0
+            self.logger.warning(
+                "delinquent_accounts missing or malformed — setting delinquent stake to 0"
+            )
+
         self.delinquent_stake.set(total_delinquent_stake)
+        self.logger.debug(f"Updated delinquent stake: {total_delinquent_stake}")
 
-        if self.stake_accounts != [] and self.stake_accounts[0].result is not None:
-            # Pending stake calculation from stake accounts
+        # Pending stake from stake_accounts (via getProgramAccounts)
+        if self.stake_accounts and self.stake_accounts[0].result is not None:
             total_delegations = sum(
                 stake_account.get("account", {}).get("lamports", 0) / 1_000_000_000
                 for stake_account in self.stake_accounts[0].result
@@ -257,10 +282,9 @@ class SolanaExporter(RPCExporter):
             activating_stake = max(0, total_delegations - total_stake)
             self.pending_stake.set(activating_stake)
             self.logger.debug(f"Updated pending stake (activating): {activating_stake}")
-
-        # Log metrics for debugging
-        self.logger.debug(f"Updated total delegated stake: {total_stake}")
-        self.logger.debug(f"Updated delinquent stake: {total_delinquent_stake}")
+        else:
+            self.pending_stake.set(0)
+            self.logger.debug("Stake accounts missing or empty — setting pending stake to 0")
 
     def _update_epoch_metrics(self, epoch_info):
         """Update metrics related to epoch and slot time."""
