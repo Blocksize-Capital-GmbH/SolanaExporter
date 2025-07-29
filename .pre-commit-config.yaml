@@ -13,10 +13,10 @@ repos:
 
     # Ensure Poetry configurations are valid
     - repo: https://github.com/python-poetry/poetry
-      rev: 1.8.0
+      rev: 2.1.3
       hooks:
           - id: poetry-check
-            additional_dependencies: [poetry==1.8.2]
+            additional_dependencies: [poetry==2.1.3]
             stages: [commit-msg]
 
     # Auto-format Python code with autopep8
@@ -25,12 +25,23 @@ repos:
       hooks:
           - id: autopep8
 
-    # Prettier for non-Python files (e.g., JSON, YAML)
+    # Prettier for non-Python files (e.g., JSON, YAML) - FIXED VERSION
     - repo: https://github.com/pre-commit/mirrors-prettier
       rev: v4.0.0-alpha.8
       hooks:
           - id: prettier
             args: ["--tab-width", "4"]
+            additional_dependencies:
+                - prettier@3.6.2
+            exclude: |
+                (?x)^(
+                    node_modules/.*|
+                    \.mypy_cache/.*|
+                    \.pytest_cache/.*|
+                    coverage/.*|
+                    htmlcov/.*|
+                    \.git/.*
+                )$
 
     # Upgrade Python syntax for the specified version
     - repo: https://github.com/asottile/pyupgrade
@@ -106,7 +117,7 @@ repos:
             exclude: "(venv|\\.venv)"
             args: ["--disable-warnings", "--no-cov"]
 
-          # Run pytest with coverage analysis
+          # Run pytest with coverage analysis - UPDATED FOR SOLANA
           - id: pytest-cov
             name: pytest-cov
             args:
@@ -126,7 +137,7 @@ repos:
             always_run: true
             exclude: "(venv|\\.venv)"
 
-          # Type checking with mypy
+          # Type checking with mypy - UPDATED FOR SOLANA
           - id: mypy
             name: mypy
             entry: poetry run mypy

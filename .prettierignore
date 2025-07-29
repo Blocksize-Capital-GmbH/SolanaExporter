@@ -1,0 +1,17 @@
+# Cache directories
+.mypy_cache/
+.pytest_cache/
+__pycache__/
+
+# Coverage reports
+coverage/
+htmlcov/
+.coverage
+
+# Node modules
+node_modules/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/ 
