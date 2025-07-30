@@ -9,7 +9,7 @@ jobs:
 
         steps:
             - name: Checkout Code
-              uses: actions/checkout@v3
+              uses: actions/checkout@v4
 
             - name: Setup Python
               uses: actions/setup-python@v4
@@ -20,8 +20,12 @@ jobs:
               run: |
                   pip install poetry
                   poetry install -vv
+                  poetry run pre-commit install
 
-            - name: Run Formatting
+            - name: Run Formatting Checks
               run: |
+                  # Execute formatting checks via pre-commit (reproducing local workflow)
+                  poetry run pre-commit run autopep8 --all-files
+                  poetry run pre-commit run prettier --all-files
                   poetry run pre-commit run black --all-files
                   poetry run pre-commit run isort --all-files
