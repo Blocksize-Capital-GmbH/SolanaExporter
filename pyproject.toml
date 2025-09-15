@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "solanaexporter"
-version = "0.7.0"
+version = "0.8.0"
 description = "A Prometheus exporter for monitoring Solana validators."
 authors = ["Axel Lode <al@blocksize-capital.com>"]
 
@@ -18,7 +18,7 @@ pydocstyle = "^6.3.0"
 pylint = "^3.3.1"
 exporter = { git = "https://github.com/BSC-aujl/RPCexporter.git", branch = "main" }
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.0.1"
 pytest-mock = "^3.6.1"
 safety = "^3.2.11"
@@ -31,10 +31,10 @@ in-place = true
 
 [tool.black]
 target-version = ["py311"]
-line-length = 96
+line-length = 120
 
 [tool.autopep8]
-max_line_length = 96
+max_line_length = 120
 profile = "black"
 ignore = "E501,W6"  # or ["E501", "W6"]
 in-place = true
@@ -56,5 +56,5 @@ ignore_missing_imports = true
 exclude = "(venv|\\.venv|tests)"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.1.4"]
 build-backend = "poetry.core.masonry.api"

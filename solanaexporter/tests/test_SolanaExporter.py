@@ -14,6 +14,8 @@ class TestSolanaExporter(unittest.TestCase):
             "VOTE_PUBKEY": "6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL",
             "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
             "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
+            "LABEL": "Blocksize_Testnet_Main",
+            "VERSION": "0.708.20306",
         }
 
     @patch("os.environ", new_callable=lambda: {})
@@ -27,15 +29,9 @@ class TestSolanaExporter(unittest.TestCase):
             {"result": {"value": 100_000_000_000}},  # getBalance
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
+            {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
             {
-                "result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}
-            },  # getLeaderSchedule
-            {
-                "result": {
-                    "value": {
-                        "byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}
-                    }
-                }
+                "result": {"value": {"byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}}}
             },  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
@@ -45,6 +41,10 @@ class TestSolanaExporter(unittest.TestCase):
 
         self.assertEqual(exporter.slot_number._value.get(), 12345)
         self.assertEqual(exporter.balance._value.get(), 100)
+        # Check that build_info contains the expected version and label strings
+        build_info_labels = exporter.build_info._value
+        self.assertEqual(build_info_labels.get("version"), "0.708.20306")
+        self.assertEqual(build_info_labels.get("label"), "Blocksize_Testnet_Main")
 
     @patch("requests.post")
     @patch.dict(
@@ -57,6 +57,8 @@ class TestSolanaExporter(unittest.TestCase):
             "VOTE_PUBKEY": "6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL",
             "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
             "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
+            "VERSION": "0.708.20306",
+            "LABEL": "Blocksize_Testnet_Main",
         },
     )
     def test_get_stake_accounts(self, mock_post):
@@ -96,12 +98,8 @@ class TestSolanaExporter(unittest.TestCase):
 
         exporter = SolanaExporter(config_source="fromEnv")
         vote_accounts = {
-            "current": [
-                {"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 500_000_000_000}
-            ],
-            "delinquent": [
-                {"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 200_000_000_000}
-            ],
+            "current": [{"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 500_000_000_000}],
+            "delinquent": [{"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 200_000_000_000}],
         }
         exporter.stake_accounts = exporter._get_stake_accounts()
         exporter._update_stake_metrics(vote_accounts)

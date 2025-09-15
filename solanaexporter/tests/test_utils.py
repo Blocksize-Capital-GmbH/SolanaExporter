@@ -24,9 +24,7 @@ class TestRoutines(unittest.TestCase):
             STAKE_PROGRAM_ID,
             encoding="base64",
             data_size=200,
-            memcmp_opts=[
-                {"offset": 124, "bytes": "CAf8jfgqhia5VNrEF4A7Y9VLD3numMq9DVSceq7cPhNY"}
-            ],
+            memcmp_opts=[{"offset": 124, "bytes": "CAf8jfgqhia5VNrEF4A7Y9VLD3numMq9DVSceq7cPhNY"}],
         )
         mock_client.close.assert_called_once()
 

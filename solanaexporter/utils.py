@@ -6,9 +6,7 @@ from solana.rpc.commitment import Confirmed
 from solana.rpc.types import MemcmpOpts
 from solders.pubkey import Pubkey as PublicKey
 
-STAKE_PROGRAM_ID: PublicKey = PublicKey.from_string(
-    "Stake11111111111111111111111111111111111111"
-)
+STAKE_PROGRAM_ID: PublicKey = PublicKey.from_string("Stake11111111111111111111111111111111111111")
 
 
 async def main():
