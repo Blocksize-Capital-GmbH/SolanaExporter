@@ -5,7 +5,7 @@ from typing import List, Literal, Optional
 from exporter.jsonRPCRequest import JsonRPCRequest
 from exporter.jsonRPCResponse import JsonRPCResponse
 from exporter.rpcExporter import RPCExporter
-from prometheus_client import Gauge
+from prometheus_client import Gauge, Info
 
 
 class SolanaExporter(RPCExporter):
@@ -43,20 +43,14 @@ class SolanaExporter(RPCExporter):
             "Current Solana epoch",
             registry=self.registry,
         )
-        self.balance = Gauge(
-            "solana_account_balance", "Validator's account balance", registry=self.registry
-        )
-        self.health_status = Gauge(
-            "solana_health_status", "Health status of the Solana node", registry=self.registry
-        )
+        self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
         self.total_delegated_stake = Gauge(
             "solana_total_delegated_stake",
             "Total stake delegated to the validator",
             registry=self.registry,
         )
-        self.delinquent_stake = Gauge(
-            "solana_delinquent_stake", "Stake that is delinquent", registry=self.registry
-        )
+        self.delinquent_stake = Gauge("solana_delinquent_stake", "Stake that is delinquent", registry=self.registry)
         self.pending_stake = Gauge(
             "solana_pending_stake",
             "Stake that is delegated but not active yet",
@@ -67,9 +61,7 @@ class SolanaExporter(RPCExporter):
             "Number of slots missed by the validator",
             registry=self.registry,
         )
-        self.leader_status = Gauge(
-            "solana_leader_status", "Leader status (1 or 0)", registry=self.registry
-        )
+        self.leader_status = Gauge("solana_leader_status", "Leader status (1 or 0)", registry=self.registry)
         self.vote_distance = Gauge(
             "solana_vote_distance",
             "Vote distance from the highest known slot",
@@ -83,6 +75,11 @@ class SolanaExporter(RPCExporter):
         self.credits_earned = Gauge(
             "solana_credits_earned",
             "Total vote credits earned by the validator",
+            registry=self.registry,
+        )
+        self.build_info = Info(
+            "solana_build",
+            "Build information including version and instance label",
             registry=self.registry,
         )
 
@@ -124,9 +121,7 @@ class SolanaExporter(RPCExporter):
 
         for idx, response in enumerate(iterable=responses):
             if response.error:
-                self.logger.error(
-                    f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}"
-                )
+                self.logger.error(f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}")
                 if idx == 6:
                     self.health_status.set(0)
                     self.sync_status.set(0)
@@ -164,15 +159,15 @@ class SolanaExporter(RPCExporter):
             self._update_slot_lag_and_sync_status(slot_value, absolute_slot_value)
 
         self._update_vote_distance(vote_accounts_result, epoch_info_result)
+        # update metrics from config file
+        self._update_build_info()
 
     def _update_slot_lag_and_sync_status(self, slot_value, absolute_slot_value):
         """Update slot_lag and sync_status metrics using values from the same probe."""
         slot_lag = abs(slot_value - absolute_slot_value)
         self.slot_lag.set(slot_lag)
         self.sync_status.set(1 if slot_lag <= 64 else 0)
-        self.logger.debug(
-            f"Updated slot lag (same probe): {slot_lag}, sync status: {1 if slot_lag <= 64 else 0}"
-        )
+        self.logger.debug(f"Updated slot lag (same probe): {slot_lag}, sync status: {1 if slot_lag <= 64 else 0}")
 
     def _update_vote_distance(self, vote_accounts_result, epoch_info_result):
         """Update the vote distance metric."""
@@ -251,9 +246,7 @@ class SolanaExporter(RPCExporter):
             )
         else:
             total_stake = 0
-            self.logger.warning(
-                "current_accounts missing or malformed — setting total delegated stake to 0"
-            )
+            self.logger.warning("current_accounts missing or malformed — setting total delegated stake to 0")
 
         self.total_delegated_stake.set(total_stake)
         self.logger.debug(f"Updated total delegated stake: {total_stake}")
@@ -261,14 +254,11 @@ class SolanaExporter(RPCExporter):
         # Validate delinquent_accounts list
         if isinstance(delinquent_accounts, list):
             total_delinquent_stake = sum(
-                account.get("activatedStake", 0) / 1_000_000_000
-                for account in delinquent_accounts
+                account.get("activatedStake", 0) / 1_000_000_000 for account in delinquent_accounts
             )
         else:
             total_delinquent_stake = 0
-            self.logger.warning(
-                "delinquent_accounts missing or malformed — setting delinquent stake to 0"
-            )
+            self.logger.warning("delinquent_accounts missing or malformed — setting delinquent stake to 0")
 
         self.delinquent_stake.set(total_delinquent_stake)
         self.logger.debug(f"Updated delinquent stake: {total_delinquent_stake}")
@@ -300,9 +290,7 @@ class SolanaExporter(RPCExporter):
             if elapsed_time > 0:
                 slots_per_second = slots_processed / elapsed_time
                 self.slot_time.set(1 / slots_per_second)
-                self.logger.debug(
-                    f"Updated slot time: {1 / slots_per_second}, slots_per_second: {slots_per_second}"
-                )
+                self.logger.debug(f"Updated slot time: {1 / slots_per_second}, slots_per_second: {slots_per_second}")
             else:
                 self.logger.warning("Elapsed time is zero, cannot calculate slots per second")
 
@@ -313,9 +301,7 @@ class SolanaExporter(RPCExporter):
     def _update_block_production_metrics(self, block_production_data):
         """Update block production metrics."""
         production_stats = (
-            block_production_data.get("value", {})
-            .get("byIdentity", {})
-            .get(self.config.validator_pubkey, [])
+            block_production_data.get("value", {}).get("byIdentity", {}).get(self.config.validator_pubkey, [])
         )
         if production_stats and len(production_stats) == 2:
             leader_slots = production_stats[0]
@@ -329,11 +315,9 @@ class SolanaExporter(RPCExporter):
         else:
             self.missed_slots.set(0)
             self.block_production_success.set(0)
-            self.logger.warning(
-                "Could not update missed slots: block production stats missing or malformed"
-            )
+            self.logger.warning("Could not update missed slots: block production stats missing or malformed")
 
-    def _update_credits_earned(self, vote_accounts_result):
+    def _update_credits_earned(self, vote_accounts_result) -> None:
         """Update the credits_earned metric."""
         credits = 0
         for account in vote_accounts_result.get("current", []):
@@ -343,6 +327,12 @@ class SolanaExporter(RPCExporter):
                 break
         self.credits_earned.set(credits)
         self.logger.debug(f"Updated credits earned: {credits}")
+
+    def _update_build_info(self) -> None:
+        """Update build information with version and label as string values."""
+        build_info_data = {"version": str(self.config.version), "label": str(self.config.label)}
+        self.build_info.info(build_info_data)
+        self.logger.debug(f"Updated build info: {build_info_data}")
 
 
 if __name__ == "__main__":

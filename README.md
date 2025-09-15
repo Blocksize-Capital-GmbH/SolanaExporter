@@ -35,6 +35,8 @@ POLL_INTERVAL=< interval for triggering RPC requests in seconds >
 VOTE_PUBKEY=< vote public key to monitor >
 VALIDATOR_PUBKEY=< validator public key to monitor >
 STAKE_ACCOUNT_PUBKEY=< stake account to monitor >
+VERSION=< your client version >
+LABEL=< label of your solana instance >
 ```
 
 # Developer Setup

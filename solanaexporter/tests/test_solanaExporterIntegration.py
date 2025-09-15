@@ -15,6 +15,8 @@ class TestSolanaExporterIntegration(unittest.TestCase):
             "POLL_INTERVAL": "10",
             "VOTE_PUBKEY": "6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL",
             "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
+            "LABEL": "Integration_Test_Label",
+            "VERSION": "1.0.0",
         }
 
     @patch.dict("os.environ", {}, clear=True)
@@ -30,12 +32,8 @@ class TestSolanaExporterIntegration(unittest.TestCase):
         exporter.collect_metrics()
 
         # Validate key metrics after collection
-        self.assertGreater(
-            exporter.slot_number._value.get(), 0, "Slot number should be greater than 0"
-        )
-        self.assertGreaterEqual(
-            exporter.balance._value.get(), 0, "Balance should not be negative"
-        )
+        self.assertGreater(exporter.slot_number._value.get(), 0, "Slot number should be greater than 0")
+        self.assertGreaterEqual(exporter.balance._value.get(), 0, "Balance should not be negative")
         self.assertIn(
             exporter.health_status._value.get(),
             {0, 1},
