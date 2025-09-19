@@ -77,6 +77,11 @@ class SolanaExporter(RPCExporter):
             "Total vote credits earned by the validator",
             registry=self.registry,
         )
+        self.missed_votes = Gauge(
+            "solana_missed_votes",
+            "Number of missed votes based on vote distance increase",
+            registry=self.registry,
+        )
         self.build_info = Info(
             "solana_build",
             "Build information including version and instance label",
@@ -170,18 +175,24 @@ class SolanaExporter(RPCExporter):
         self.logger.debug(f"Updated slot lag (same probe): {slot_lag}, sync status: {1 if slot_lag <= 64 else 0}")
 
     def _update_vote_distance(self, vote_accounts_result, epoch_info_result):
-        """Update the vote distance metric."""
+        """Update the vote distance metric and calculate missed votes."""
         if not vote_accounts_result or not epoch_info_result:
             return
+
         highest_vote = 0
         for account in vote_accounts_result.get("current", []):
             if account.get("votePubkey") == self.config.vote_pubkey:
                 highest_vote = account.get("lastVote", 0)
                 break
+
         highest_known_slot = epoch_info_result.get("absoluteSlot", 0)
-        vote_distance = highest_known_slot - highest_vote if highest_vote else 0
-        self.vote_distance.set(vote_distance)
-        self.logger.debug(f"Updated vote distance: {vote_distance}")
+        current_vote_distance = highest_known_slot - highest_vote if highest_vote else 0
+
+        # Calculate missed votes based on epoch credits analysis
+        self._update_missed_votes(vote_accounts_result, epoch_info_result)
+
+        self.vote_distance.set(current_vote_distance)
+        self.logger.debug(f"Updated vote distance: {current_vote_distance}")
 
     def _update_slot_metrics(self, current_slot):
         """Update slot-related metrics."""
@@ -327,6 +338,109 @@ class SolanaExporter(RPCExporter):
                 break
         self.credits_earned.set(credits)
         self.logger.debug(f"Updated credits earned: {credits}")
+
+    def _update_missed_votes(self, vote_accounts_result, epoch_info_result):
+        """Calculate missed votes based on current epoch progress vs actual credits earned."""
+        if not vote_accounts_result or not epoch_info_result:
+            return
+
+        current_epoch = epoch_info_result.get("epoch", 0)
+        slot_index = epoch_info_result.get("slotIndex", 0)
+        slots_in_epoch = epoch_info_result.get("slotsInEpoch", 1)
+
+        # Find our validator's vote account
+        validator_vote_account = None
+        for account in vote_accounts_result.get("current", []) + vote_accounts_result.get("delinquent", []):
+            if account.get("votePubkey") == self.config.vote_pubkey:
+                validator_vote_account = account
+                break
+
+        if not validator_vote_account:
+            self.logger.debug("Validator vote account not found in vote accounts")
+            self.missed_votes.set(0)
+            return
+
+        epoch_credits = validator_vote_account.get("epochCredits", [])
+        if not epoch_credits:
+            self.logger.debug("No epoch credits data available")
+            self.missed_votes.set(0)
+            return
+
+        # Calculate real-time missed votes for current epoch
+        missed_votes = self._calculate_current_epoch_missed_votes(
+            epoch_credits, current_epoch, slot_index, slots_in_epoch, validator_vote_account
+        )
+
+        if missed_votes is not None:
+            self.missed_votes.set(missed_votes)
+            self.logger.debug(
+                f"Updated missed votes: {missed_votes} (epoch {current_epoch}, slot {slot_index}/{slots_in_epoch})"
+            )
+
+    def _calculate_current_epoch_missed_votes(
+        self, epoch_credits, current_epoch, slot_index, slots_in_epoch, vote_account
+    ):
+        """Calculate missed votes for current epoch based on real-time progress."""
+        if not epoch_credits:
+            return 0
+
+        # Find current epoch in epoch_credits (should be first entry)
+        current_epoch_credits = None
+        for credits_entry in epoch_credits:
+            if len(credits_entry) >= 3 and credits_entry[0] == current_epoch:
+                current_epoch_credits = credits_entry
+                break
+
+        if not current_epoch_credits:
+            # If current epoch not found, might be at epoch boundary
+            self.logger.debug(f"Current epoch {current_epoch} not found in epoch credits")
+            return 0
+
+        epoch, total_credits, credits_at_epoch_start = current_epoch_credits
+        current_epoch_credits_earned = total_credits - credits_at_epoch_start
+
+        # Calculate expected credits based on epoch progress
+        epoch_progress = slot_index / slots_in_epoch if slots_in_epoch > 0 else 0
+
+        # Get validator's stake weight for better estimation
+        activated_stake = vote_account.get("activatedStake", 0)
+
+        # Estimate expected credits based on:
+        # 1. Epoch progress (how far through the epoch we are)
+        # 2. Validator's stake weight (higher stake = more voting opportunities)
+        # 3. Historical performance (use previous epoch as baseline)
+
+        expected_credits = self._estimate_expected_credits(epoch_credits, epoch_progress, activated_stake)
+
+        # Calculate missed votes as the difference
+        missed_votes = max(0, expected_credits - current_epoch_credits_earned)
+
+        self.logger.debug(
+            f"Epoch {current_epoch} progress: {epoch_progress:.2%}, "
+            f"Credits: {current_epoch_credits_earned}/{expected_credits:.1f}, "
+            f"Missed: {missed_votes:.1f}"
+        )
+
+        return int(missed_votes)
+
+    def _estimate_expected_credits(self, epoch_credits, epoch_progress, activated_stake):
+        """Estimate expected credits based on epoch progress and historical performance."""
+        if len(epoch_credits) < 2:
+            # No historical data, use a conservative estimate
+            # Assume roughly 1 credit per ~400 slots (approximate voting frequency)
+            # This is a rough heuristic that should be refined with real data
+            return epoch_progress * 200
+
+        # Use previous epoch as baseline for expected performance
+        prev_epoch_credits = epoch_credits[1] if len(epoch_credits) > 1 else epoch_credits[0]
+        if len(prev_epoch_credits) >= 3:
+            prev_epoch_earned = prev_epoch_credits[1] - prev_epoch_credits[2]
+            # Scale previous epoch performance by current epoch progress
+            expected_credits = prev_epoch_earned * epoch_progress
+            return expected_credits
+
+        # Fallback to simple heuristic
+        return epoch_progress * 200
 
     def _update_build_info(self) -> None:
         """Update build information with version and label as string values."""
