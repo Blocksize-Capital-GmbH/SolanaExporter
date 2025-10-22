@@ -1,0 +1,236 @@
+---
+name: Setup Environment
+
+on:
+    workflow_call:
+        inputs:
+            python-version:
+                description: "Python version to use"
+                required: false
+                type: string
+                default: "3.12"
+            artifacts-dir:
+                description: "Directory for storing all artifacts"
+                required: false
+                type: string
+                default: "artifacts"
+        outputs:
+            artifacts-path:
+                description: "Path to the artifacts directory"
+                value: ${{ jobs.setup.outputs.artifacts-path }}
+
+env:
+    PYTHON_VERSION: ${{ inputs.python-version }}
+    ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+
+jobs:
+    setup:
+        name: Setup Environment and Create Artifacts
+        runs-on: ubuntu-22.04
+        outputs:
+            artifacts-path: ${{ steps.setup-artifacts.outputs.artifacts-path }}
+        steps:
+            - name: Setup artifacts directory structure
+              id: setup-artifacts
+              run: |
+                  echo "Creating unified artifacts directory structure..."
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+                  mkdir -p "$ARTIFACTS_PATH/poetry-cache"
+                  mkdir -p "$ARTIFACTS_PATH/poetry-data"
+                  mkdir -p "$ARTIFACTS_PATH/venv"
+                  mkdir -p "$ARTIFACTS_PATH/source"
+
+                  echo "Artifacts directory structure created:"
+                  ls -la "$ARTIFACTS_PATH"
+
+                  echo "artifacts-path=$ARTIFACTS_PATH" >> $GITHUB_OUTPUT
+
+            - name: Setup Python environment
+              id: setup-python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+
+            - name: Checkout repository to artifacts/source
+              uses: actions/checkout@v4
+              with:
+                  path: ${{ env.ARTIFACTS_DIR }}/source
+
+            - name: Copy .github directory to non-hidden location
+              run: |
+                  echo "Copying .github directory to ensure it's included in artifacts..."
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+
+                  # Verify .github directory exists in source
+                  if [ -d "$ARTIFACTS_PATH/source/.github" ]; then
+                      echo "✓ Found .github directory in source"
+
+                      # Copy to non-hidden location
+                      cp -r "$ARTIFACTS_PATH/source/.github" "$ARTIFACTS_PATH/github-actions"
+                      echo "✓ Copied .github to github-actions (non-hidden)"
+
+                      # Verify the copy worked
+                      echo "Contents of github-actions directory:"
+                      ls -la "$ARTIFACTS_PATH/github-actions/"
+
+                      if [ -f "$ARTIFACTS_PATH/github-actions/actions/restore-environment/action.yml" ]; then
+                          echo "✓ Composite action found in copied directory"
+                      else
+                          echo "✗ Composite action not found in copied directory"
+                      fi
+                  else
+                      echo "✗ .github directory not found in source checkout"
+                      exit 1
+                  fi
+
+            - name: Fix permissions on artifacts directory
+              run: |
+                  sudo chown -R $(id -u):$(id -g) "${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+
+            - name: Install Poetry
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install poetry
+
+            - name: Configure Poetry with custom directories
+              run: |
+                  set -e
+                  echo "Configuring Poetry with unified artifacts structure..."
+
+                  # Define directories
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+                  POETRY_VENV_PATH="$ARTIFACTS_PATH/venv"
+                  POETRY_CACHE_DIR="$ARTIFACTS_PATH/poetry-cache"
+                  POETRY_DATA_DIR="$ARTIFACTS_PATH/poetry-data"
+
+                  # Verify Poetry installation
+                  echo "Poetry version: $(poetry --version)"
+
+                  # Configure Poetry to use artifacts directories
+                  poetry config virtualenvs.create true
+                  poetry config virtualenvs.in-project false
+                  poetry config virtualenvs.path "$POETRY_VENV_PATH"
+                  poetry config cache-dir "$POETRY_CACHE_DIR"
+
+                  # Set environment variable for data-dir (workaround for Poetry version compatibility)
+                  echo "POETRY_DATA_DIR=$POETRY_DATA_DIR" >> $GITHUB_ENV
+
+                  # Display configuration
+                  echo "Poetry configuration:"
+                  poetry config --list
+
+            - name: Cache Poetry directories
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ${{ env.ARTIFACTS_DIR }}/poetry-cache
+                      ${{ env.ARTIFACTS_DIR }}/poetry-data
+                  key: >-
+                      poetry-dirs-${{ runner.os }}-${{ hashFiles('**/poetry.lock') }}
+                  restore-keys: |
+                      poetry-dirs-${{ runner.os }}-
+
+            - name: Install project dependencies
+              working-directory: ${{ env.ARTIFACTS_DIR }}/source
+              run: |
+                  echo "Installing project dependencies..."
+                  # Create .env from .env file if it doesn't exist
+                  if [ ! -f .env ]; then
+                      if [ -f solanaExporter.env ]; then
+                          cp solanaExporter.env .env
+                      else
+                          echo "Creating minimal .env file..."
+                          cat > .env << 'EOF'
+                  SOLANA_RPC_URL=http://localhost:8899
+                  SOLANA_PUBLIC_RPC_URL=https://api.mainnet-beta.solana.com
+                  EXPORTER_PORT=9090
+                  POLL_INTERVAL=30
+                  VOTE_PUBKEY=
+                  VALIDATOR_PUBKEY=
+                  STAKE_ACCOUNT_PUBKEY=
+                  VERSION=0.8.0
+                  LABEL=solana-test
+                  EOF
+                      fi
+                  fi
+                  poetry install -vv --no-root
+
+                  echo "Verifying installation..."
+                  poetry env info
+
+            - name: Verify and prepare virtual environment
+              run: |
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+                  cd "$ARTIFACTS_PATH/source"
+                  VENV_FULL_PATH=$(poetry env info --path)
+                  echo "Expected venv path: $VENV_FULL_PATH"
+                  if [ -d "$VENV_FULL_PATH" ]; then
+                      echo "✓ Virtual environment found at: $VENV_FULL_PATH"
+                      echo "Size: $(du -sh "$VENV_FULL_PATH")"
+                      echo "VENV_FULL_PATH=$VENV_FULL_PATH" >> $GITHUB_ENV
+                  else
+                      echo "✗ Virtual environment not found at expected path"
+                      exit 1
+                  fi
+
+            - name: Create comprehensive environment configuration
+              run: |
+                  echo "Creating environment configuration script..."
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+                  VENV_FULL_PATH="$VENV_FULL_PATH"
+                  cat > "$ARTIFACTS_PATH/python-env.sh" << EOF
+                  #!/bin/bash
+                  # Environment configuration for SolanaExporter CI
+
+                  # Python environment
+                  export PYTHON_VERSION="${{ env.PYTHON_VERSION }}"
+                  export pythonLocation="${{ steps.setup-python.outputs.python-path }}"
+                  export PKG_CONFIG_PATH="${{ steps.setup-python.outputs.python-path }}/lib/pkgconfig"
+                  export Python_ROOT_DIR="${{ steps.setup-python.outputs.python-path }}"
+                  export Python2_ROOT_DIR="${{ steps.setup-python.outputs.python-path }}"
+                  export Python3_ROOT_DIR="${{ steps.setup-python.outputs.python-path }}"
+                  export LD_LIBRARY_PATH="${{ steps.setup-python.outputs.python-path }}/lib"
+
+                  # Artifacts directories
+                  export ARTIFACTS_DIR="$ARTIFACTS_PATH"
+                  export POETRY_CACHE_DIR="$ARTIFACTS_PATH/poetry-cache"
+                  export POETRY_DATA_DIR="$ARTIFACTS_PATH/poetry-data"
+
+                  # Virtual environment
+                  export VIRTUAL_ENV="$VENV_FULL_PATH"
+                  export PATH="$VENV_FULL_PATH/bin:\$PATH"
+
+                  # Working directory
+                  export PROJECT_DIR="$ARTIFACTS_PATH/source"
+
+                  echo "Environment configured successfully"
+                  echo "Virtual environment: \$VIRTUAL_ENV"
+                  echo "Project directory: \$PROJECT_DIR"
+                  EOF
+
+                  chmod +x "$ARTIFACTS_PATH/python-env.sh"
+
+                  echo "Environment configuration created:"
+                  cat "$ARTIFACTS_PATH/python-env.sh"
+
+            - name: Verify artifacts structure
+              run: |
+                  echo "=== Final Artifacts Structure ==="
+                  ARTIFACTS_PATH="${GITHUB_WORKSPACE}/${{ env.ARTIFACTS_DIR }}"
+                  find "$ARTIFACTS_PATH" -type f -name "python-env.sh" -o -name "pyvenv.cfg" -o -name "poetry.lock" | head -10
+
+                  echo "=== Artifacts Directory Size ==="
+                  du -sh "$ARTIFACTS_PATH"
+
+                  echo "=== Artifacts Subdirectory Sizes ==="
+                  du -sh "$ARTIFACTS_PATH"/*
+
+            - name: Upload unified artifacts
+              uses: actions/upload-artifact@v4
+              with:
+                  name: solanaexporter-artifacts-${{ github.run_id }}
+                  path: ${{ env.ARTIFACTS_DIR }}
+                  retention-days: 1
+                  if-no-files-found: error
+                  include-hidden-files: true
+

@@ -1,0 +1,86 @@
+---
+name: Main Branch CI
+
+on:
+    workflow_call:
+        inputs:
+            python-version:
+                description: "Python version to use"
+                required: false
+                type: string
+                default: "3.12"
+            artifacts-dir:
+                description: "Directory for storing all artifacts"
+                required: false
+                type: string
+                default: "artifacts"
+
+permissions:
+    packages: write
+    contents: read
+    actions: read
+    security-events: write
+
+env:
+    PYTHON_VERSION: ${{ inputs.python-version }}
+    ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+
+jobs:
+    setup:
+        name: Setup Environment
+        uses: ./.github/workflows/setup-environment.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    # Comprehensive checks for main branch
+    pre_commit_all:
+        name: Run All Pre-commit Hooks
+        needs: setup
+        uses: ./.github/workflows/pre-commit-all.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    tests:
+        name: Run Tests with Coverage
+        needs: setup
+        uses: ./.github/workflows/tests.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+            skip-coverage: "false" # Full coverage for main
+
+    security_scan:
+        name: Security Scan
+        runs-on: ubuntu-22.04
+        needs: setup
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v4
+
+            - name: Run Trivy vulnerability scanner
+              id: trivy-scan
+              uses: aquasecurity/trivy-action@0.24.0
+              with:
+                  scan-type: "fs"
+                  scan-ref: "."
+                  format: "sarif"
+                  output: "trivy-results.sarif"
+                  exit-code: "0"
+
+            - name: Upload Trivy scan results to GitHub Security tab
+              uses: github/codeql-action/upload-sarif@v3
+              if: always() && steps.trivy-scan.conclusion != 'skipped'
+              with:
+                  sarif_file: "trivy-results.sarif"
+                  category: "trivy-security-scan"
+
+    docker:
+        name: Build and Push Docker Image
+        needs: [pre_commit_all, tests, security_scan]
+        uses: ./.github/workflows/docker.yml
+        with:
+            build-type: "main"
+            branch-name: "main"
+
