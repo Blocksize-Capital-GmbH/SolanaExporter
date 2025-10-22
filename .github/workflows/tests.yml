@@ -1,32 +1,139 @@
-name: Tests
+---
+name: Run Tests
 
-on:
+"on":
     workflow_call:
+        inputs:
+            python-version:
+                description: "Python version to use"
+                required: false
+                type: string
+                default: "3.12"
+            artifacts-dir:
+                description: "Directory for storing all artifacts"
+                required: false
+                type: string
+                default: "artifacts"
+            skip-coverage:
+                description: "Skip coverage checks"
+                required: false
+                type: string
+                default: "false"
+
+env:
+    PYTHON_VERSION: ${{ inputs.python-version }}
+    ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+    SKIP_COVERAGE: ${{ inputs.skip-coverage }}
 
 jobs:
     tests:
-        runs-on: ubuntu-latest
-
+        name: Run Tests
+        runs-on: ubuntu-22.04
         steps:
-            - name: Checkout Code
-              uses: actions/checkout@v4
-
-            - name: Setup Python
-              uses: actions/setup-python@v4
+            - name: Download unified artifacts
+              uses: actions/download-artifact@v4
               with:
-                  python-version: 3.12
+                  name: solanaexporter-artifacts-${{ github.run_id }}
+                  path: ${{ env.ARTIFACTS_DIR }}
 
-            - name: Install Dependencies
+            - name: Copy .github directory to workspace root
               run: |
-                  pip install poetry
-                  poetry install -vv
+                  set -e
+                  echo "=== Copying .github directory from artifacts ==="
+                  ARTIFACTS_PATH="${{ env.ARTIFACTS_DIR }}"
+                  echo "Artifacts directory: $ARTIFACTS_PATH"
+                  echo "Current working directory: $(pwd)"
+                  echo "Workspace: $GITHUB_WORKSPACE"
 
-            - name: Run Tests
+                  # Check for non-hidden github-actions directory first
+                  if [ -d "$ARTIFACTS_PATH/github-actions" ]; then
+                      echo "✓ Found github-actions directory"
+                      echo "Copying github-actions to .github in workspace root..."
+                      cp -r "$ARTIFACTS_PATH/github-actions" "$GITHUB_WORKSPACE/.github"
+                      echo "✓ .github directory copied successfully"
+                  elif [ -d "$ARTIFACTS_PATH/source/.github" ]; then
+                      echo "✓ Found .github directory in source"
+                      echo "Copying .github directory to workspace root..."
+                      cp -r "$ARTIFACTS_PATH/source/.github" "$GITHUB_WORKSPACE/"
+                      echo "✓ .github directory copied successfully"
+                  else
+                      echo "✗ Neither github-actions nor source/.github found"
+                      echo "Available directories in artifacts:"
+                      ls -la "$ARTIFACTS_PATH" || echo "Artifacts directory not found"
+                      echo "Creating minimal .github structure for action to work"
+                      mkdir -p "$GITHUB_WORKSPACE/.github/actions/restore-environment"
+                      echo "Minimal .github structure created as fallback"
+                  fi
+
+            - name: Restore Environment
+              uses: ./.github/actions/restore-environment
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+                  artifacts-dir: ${{ env.ARTIFACTS_DIR }}
+
+            - name: Run test suite with coverage
+              if: ${{ env.SKIP_COVERAGE == 'false' }}
               run: |
-                  poetry run pytest --cov=solanaexporter --cov-report=term --cov-report=html --disable-warnings --cov-fail-under=70
+                  set -e
+                  echo "=== Running Test Suite with Coverage ==="
 
-            - name: Upload Coverage Report
+                  # Source environment
+                  source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
+                  cd "$PROJECT_DIR"
+
+                  # Verify permissions and environment
+                  echo "Current directory: $(pwd)"
+                  echo "Virtual environment: $VIRTUAL_ENV"
+                  echo "Python executable: $(which python)"
+                  echo "Python version: $(python --version)"
+
+                  # Verify test directory exists and is accessible
+                  if [ ! -d "solanaexporter/tests/" ]; then
+                      echo "Error: Test directory not found"
+                      ls -la solanaexporter/
+                      exit 1
+                  fi
+
+                  echo "Test directory contents:"
+                  ls -la solanaexporter/tests/
+
+                  # Execute tests via poetry (reproducing local workflow)
+                  echo "Running pytest with coverage..."
+                  poetry run pytest solanaexporter/tests/ -v \
+                      --cov=solanaexporter --cov-report=html --cov-report=term-missing \
+                      --disable-warnings --cov-fail-under=70
+
+            - name: Run test suite without coverage
+              if: ${{ env.SKIP_COVERAGE == 'true' }}
+              run: |
+                  set -e
+                  echo "=== Running Test Suite Without Coverage ==="
+
+                  # Source environment
+                  source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
+                  cd "$PROJECT_DIR"
+
+                  # Verify permissions and environment
+                  echo "Current directory: $(pwd)"
+                  echo "Virtual environment: $VIRTUAL_ENV"
+                  echo "Python executable: $(which python)"
+                  echo "Python version: $(python --version)"
+
+                  # Verify test directory exists and is accessible
+                  if [ ! -d "solanaexporter/tests/" ]; then
+                      echo "Error: Test directory not found"
+                      ls -la solanaexporter/
+                      exit 1
+                  fi
+
+                  # Execute tests via poetry without coverage
+                  echo "Running pytest without coverage..."
+                  poetry run pytest solanaexporter/tests/ -v --disable-warnings
+
+            - name: Upload coverage reports
+              if: ${{ env.SKIP_COVERAGE == 'false' }}
               uses: actions/upload-artifact@v4
               with:
-                  name: coverage-report
-                  path: htmlcov/
+                  name: coverage-report-${{ github.run_id }}
+                  path: ${{ env.ARTIFACTS_DIR }}/source/htmlcov/
+                  retention-days: 7

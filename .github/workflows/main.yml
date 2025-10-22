@@ -1,32 +1,49 @@
+---
 name: CI Pipeline
 
 on:
     push:
         branches:
-            - "main"
+            - main
+            - "feature/*"
+            - "hotfix/*"
+            - "bugfix/*"
+        tags:
+            - "v*" # Trigger on version tags (v0.8.0, v0.9.0, etc.)
     pull_request:
-        branches:
-            - "main"
+        branches: [main]
+        types: [opened, synchronize, reopened]
 
 permissions:
     packages: write
     contents: read
+    actions: read
+    security-events: write
+
+env:
+    PYTHON_VERSION: "3.12"
+    ARTIFACTS_DIR: "artifacts"
 
 jobs:
-    lint:
-        uses: ./.github/workflows/lint.yml
+    # ===========================================
+    # MAIN BRANCH WORKFLOW (Comprehensive)
+    # ===========================================
+    main_branch_ci:
+        name: Main Branch CI
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: ./.github/workflows/main-branch-ci.yml
+        with:
+            python-version: "3.12"
+            artifacts-dir: "artifacts"
 
-    format:
-        uses: ./.github/workflows/format.yml
-
-    run-tests:
-        uses: ./.github/workflows/tests.yml
-
-    check-docstring:
-        uses: ./.github/workflows/docstring-check.yml
-
-    type-check:
-        uses: ./.github/workflows/type-check.yml
-
-    docker:
-        uses: ./.github/workflows/docker.yml
+    # ===========================================
+    # FEATURE BRANCH WORKFLOW (Fast feedback)
+    # ===========================================
+    feature_branch_ci:
+        name: Feature Branch CI
+        if: github.ref != 'refs/heads/main' || github.event_name == 'pull_request'
+        uses: ./.github/workflows/feature-branch-ci.yml
+        with:
+            python-version: "3.12"
+            artifacts-dir: "artifacts"
+            branch-name: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}
