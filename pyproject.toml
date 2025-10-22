@@ -16,7 +16,7 @@ requests-mock = "^1.12.1"
 mypy = "^1.13.0"
 pydocstyle = "^6.3.0"
 pylint = "^3.3.1"
-exporter = { git = "https://github.com/BSC-aujl/RPCexporter.git", branch = "main" }
+exporter = { git = "https://github.com/Blocksize-Capital-GmbH/RPCexporter.git", branch = "feature/configurable-keys" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.1"
