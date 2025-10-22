@@ -17,6 +17,7 @@ class TestSolanaExporterIntegration(unittest.TestCase):
             "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
             "LABEL": "Integration_Test_Label",
             "VERSION": "1.0.0",
+            "DOUBLE_ZERO_FEES_ADDRESS": "11111111111111111111111111111111",
         }
 
     @patch.dict("os.environ", {}, clear=True)

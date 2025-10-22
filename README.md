@@ -37,6 +37,8 @@ VALIDATOR_PUBKEY=< validator public key to monitor >
 STAKE_ACCOUNT_PUBKEY=< stake account to monitor >
 VERSION=< your client version >
 LABEL=< label of your solana instance >
+# Optional configurations:
+# DOUBLE_ZERO_FEES_ADDRESS=< address to monitor for double zero balance metric >
 ```
 
 # Developer Setup

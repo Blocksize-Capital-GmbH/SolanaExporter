@@ -7,10 +7,36 @@ from exporter.jsonRPCResponse import JsonRPCResponse
 from exporter.rpcExporter import RPCExporter
 from prometheus_client import Gauge, Info
 
+# Solana-specific configuration keys
+# Required configuration keys - these must be present
+REQUIRED_CONFIG_KEYS = {
+    "rpc_url": "SOLANA_RPC_URL",
+    "public_rpc_url": "SOLANA_PUBLIC_RPC_URL",
+    "exporter_port": "EXPORTER_PORT",
+    "poll_interval": "POLL_INTERVAL",
+    "vote_pubkey": "VOTE_PUBKEY",
+    "validator_pubkey": "VALIDATOR_PUBKEY",
+    "version": "VERSION",
+    "label": "LABEL",
+}
+
+# Optional configuration keys - these can be omitted
+OPTIONAL_CONFIG_KEYS = {
+    "double_zero_fees_address": "DOUBLE_ZERO_FEES_ADDRESS",
+}
+
+# All configuration keys combined
+ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
+
 
 class SolanaExporter(RPCExporter):
     def __init__(self, config_source: str, config_file: Optional[str] = None):
-        super().__init__(network="solana", config_source=config_source, config_file=config_file)
+        super().__init__(
+            config_source=config_source,
+            config_file=config_file,
+            config_keys=ALL_CONFIG_KEYS,
+            required_keys=REQUIRED_CONFIG_KEYS,
+        )
 
         # Prometheus metrics setup
         self.slot_number = Gauge(
@@ -44,6 +70,11 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
         self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.double_zero_balance = Gauge(
+            "solana_double_zero_balance",
+            "Balance of the double zero fees address",
+            registry=self.registry,
+        )
         self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
         self.total_delegated_stake = Gauge(
             "solana_total_delegated_stake",
@@ -98,12 +129,23 @@ class SolanaExporter(RPCExporter):
         rpc_requests: List[JsonRPCRequest] = [
             JsonRPCRequest("getSlot"),
             JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),
-            JsonRPCRequest("getVoteAccounts", params=[{"votePubkey": self.config.vote_pubkey}]),
-            JsonRPCRequest("getEpochInfo"),
-            JsonRPCRequest("getLeaderSchedule"),
-            JsonRPCRequest("getBlockProduction"),
-            JsonRPCRequest("getHealth"),
         ]
+
+        # Track if we're requesting double_zero_balance
+        has_double_zero = False
+        if hasattr(self.config, "double_zero_fees_address") and self.config.double_zero_fees_address:
+            rpc_requests.append(JsonRPCRequest("getBalance", params=[self.config.double_zero_fees_address]))
+            has_double_zero = True
+
+        rpc_requests.extend(
+            [
+                JsonRPCRequest("getVoteAccounts", params=[{"votePubkey": self.config.vote_pubkey}]),
+                JsonRPCRequest("getEpochInfo"),
+                JsonRPCRequest("getLeaderSchedule"),
+                JsonRPCRequest("getBlockProduction"),
+                JsonRPCRequest("getHealth"),
+            ]
+        )
 
         responses: List[JsonRPCResponse] = self._batched_rpc_call(rpc_requests)
         if not responses or len(responses) != len(rpc_requests):
@@ -119,10 +161,14 @@ class SolanaExporter(RPCExporter):
         slot_value = None
         absolute_slot_value = None
 
+        # Calculate dynamic indices based on whether double_zero_balance is included
+        idx_offset = 1 if has_double_zero else 0
+        health_idx = 7 if has_double_zero else 6
+
         for idx, response in enumerate(iterable=responses):
             if response.error:
                 self.logger.error(f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}")
-                if idx == 6:
+                if idx == health_idx:
                     self.health_status.set(0)
                     self.sync_status.set(0)
                 continue
@@ -135,21 +181,25 @@ class SolanaExporter(RPCExporter):
                 balance = result.get("value", 0) / 1_000_000_000
                 self.balance.set(balance)
                 self.logger.debug(f"Updated balance: {balance}")
-            elif idx == 2:  # getVoteAccounts
+            elif has_double_zero and idx == 2:  # getBalance (double_zero_fees_address)
+                double_zero_balance = result.get("value", 0) / 1_000_000_000
+                self.double_zero_balance.set(double_zero_balance)
+                self.logger.debug(f"Updated double_zero_balance: {double_zero_balance}")
+            elif idx == 2 + idx_offset:  # getVoteAccounts
                 self._update_stake_metrics(vote_accounts=result)
                 self._update_credits_earned(result)
                 vote_accounts_result = result
-            elif idx == 3:  # getEpochInfo
+            elif idx == 3 + idx_offset:  # getEpochInfo
                 absolute_slot_value = result.get("absoluteSlot", 0)
                 self._update_epoch_metrics(epoch_info=result)
                 epoch_info_result = result
-            elif idx == 4:  # getLeaderSchedule
+            elif idx == 4 + idx_offset:  # getLeaderSchedule
                 is_leader: bool = self.config.vote_pubkey in result
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
-            elif idx == 5:  # getBlockProduction
+            elif idx == 5 + idx_offset:  # getBlockProduction
                 self._update_block_production_metrics(block_production_data=result)
-            elif idx == 6:  # getHealth
+            elif idx == 6 + idx_offset:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
                 self.logger.debug(msg=f"Updated health status: {health}")
