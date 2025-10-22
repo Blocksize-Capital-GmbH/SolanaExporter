@@ -44,6 +44,11 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
         self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.double_zero_balance = Gauge(
+            "solana_double_zero_balance",
+            "Balance of the double zero fees address",
+            registry=self.registry,
+        )
         self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
         self.total_delegated_stake = Gauge(
             "solana_total_delegated_stake",
@@ -98,6 +103,7 @@ class SolanaExporter(RPCExporter):
         rpc_requests: List[JsonRPCRequest] = [
             JsonRPCRequest("getSlot"),
             JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),
+            JsonRPCRequest("getBalance", params=[self.config.double_zero_fees_address]),
             JsonRPCRequest("getVoteAccounts", params=[{"votePubkey": self.config.vote_pubkey}]),
             JsonRPCRequest("getEpochInfo"),
             JsonRPCRequest("getLeaderSchedule"),
@@ -122,7 +128,7 @@ class SolanaExporter(RPCExporter):
         for idx, response in enumerate(iterable=responses):
             if response.error:
                 self.logger.error(f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}")
-                if idx == 6:
+                if idx == 7:
                     self.health_status.set(0)
                     self.sync_status.set(0)
                 continue
@@ -135,21 +141,25 @@ class SolanaExporter(RPCExporter):
                 balance = result.get("value", 0) / 1_000_000_000
                 self.balance.set(balance)
                 self.logger.debug(f"Updated balance: {balance}")
-            elif idx == 2:  # getVoteAccounts
+            elif idx == 2:  # getBalance (double_zero_fees_address)
+                double_zero_balance = result.get("value", 0) / 1_000_000_000
+                self.double_zero_balance.set(double_zero_balance)
+                self.logger.debug(f"Updated double_zero_balance: {double_zero_balance}")
+            elif idx == 3:  # getVoteAccounts
                 self._update_stake_metrics(vote_accounts=result)
                 self._update_credits_earned(result)
                 vote_accounts_result = result
-            elif idx == 3:  # getEpochInfo
+            elif idx == 4:  # getEpochInfo
                 absolute_slot_value = result.get("absoluteSlot", 0)
                 self._update_epoch_metrics(epoch_info=result)
                 epoch_info_result = result
-            elif idx == 4:  # getLeaderSchedule
+            elif idx == 5:  # getLeaderSchedule
                 is_leader: bool = self.config.vote_pubkey in result
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
-            elif idx == 5:  # getBlockProduction
+            elif idx == 6:  # getBlockProduction
                 self._update_block_production_metrics(block_production_data=result)
-            elif idx == 6:  # getHealth
+            elif idx == 7:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
                 self.logger.debug(msg=f"Updated health status: {health}")

@@ -16,6 +16,7 @@ class TestSolanaExporter(unittest.TestCase):
             "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
             "LABEL": "Blocksize_Testnet_Main",
             "VERSION": "0.708.20306",
+            "DOUBLE_ZERO_FEES_ADDRESS": "11111111111111111111111111111111",
         }
 
     @patch("os.environ", new_callable=lambda: {})
@@ -27,6 +28,7 @@ class TestSolanaExporter(unittest.TestCase):
         mock_post.return_value.json.return_value = [
             {"result": 12345},  # getSlot
             {"result": {"value": 100_000_000_000}},  # getBalance
+            {"result": {"value": 50_000_000_000}},  # getBalance (double_zero_fees_address)
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
             {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
@@ -41,6 +43,7 @@ class TestSolanaExporter(unittest.TestCase):
 
         self.assertEqual(exporter.slot_number._value.get(), 12345)
         self.assertEqual(exporter.balance._value.get(), 100)
+        self.assertEqual(exporter.double_zero_balance._value.get(), 50)
         # Check that build_info contains the expected version and label strings
         build_info_labels = exporter.build_info._value
         self.assertEqual(build_info_labels.get("version"), "0.708.20306")
@@ -59,6 +62,7 @@ class TestSolanaExporter(unittest.TestCase):
             "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
             "VERSION": "0.708.20306",
             "LABEL": "Blocksize_Testnet_Main",
+            "DOUBLE_ZERO_FEES_ADDRESS": "11111111111111111111111111111111",
         },
     )
     def test_get_stake_accounts(self, mock_post):
