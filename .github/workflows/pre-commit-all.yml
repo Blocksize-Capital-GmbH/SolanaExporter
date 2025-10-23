@@ -73,4 +73,3 @@ jobs:
                   # This reproduces the exact local commit flow
                   echo "Running all pre-commit hooks as in local development..."
                   poetry run pre-commit run --all-files
-
