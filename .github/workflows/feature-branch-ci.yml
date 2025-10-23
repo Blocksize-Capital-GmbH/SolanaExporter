@@ -1,0 +1,88 @@
+---
+name: Feature Branch CI
+
+on:
+    workflow_call:
+        inputs:
+            python-version:
+                description: "Python version to use"
+                required: false
+                type: string
+                default: "3.12"
+            artifacts-dir:
+                description: "Directory for storing all artifacts"
+                required: false
+                type: string
+                default: "artifacts"
+            branch-name:
+                description: "Branch name for tagging"
+                required: false
+                type: string
+                default: ""
+
+permissions:
+    packages: write
+    contents: read
+    actions: read
+
+env:
+    PYTHON_VERSION: ${{ inputs.python-version }}
+    ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
+
+jobs:
+    setup:
+        name: Setup Environment
+        uses: ./.github/workflows/setup-environment.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    # Fast feedback checks for feature branches
+    format:
+        name: Check Code Formatting
+        needs: setup
+        uses: ./.github/workflows/format.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    lint:
+        name: Run Code Linting
+        needs: setup
+        uses: ./.github/workflows/lint.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    type_check:
+        name: Run Type Checking
+        needs: setup
+        uses: ./.github/workflows/type-check.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    docstring_check:
+        name: Check Documentation Strings
+        needs: setup
+        uses: ./.github/workflows/docstring-check.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    tests:
+        name: Run Tests (No Coverage)
+        needs: setup
+        uses: ./.github/workflows/tests.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+            skip-coverage: "true" # Skip coverage for faster feedback
+
+    docker:
+        name: Build and Push Docker Image
+        needs: [format, lint, type_check, docstring_check, tests]
+        uses: ./.github/workflows/docker.yml
+        with:
+            build-type: "branch"
+            branch-name: ${{ inputs.branch-name }}

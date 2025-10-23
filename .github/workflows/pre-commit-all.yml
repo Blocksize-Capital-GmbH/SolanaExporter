@@ -1,5 +1,5 @@
 ---
-name: Run Type Checking
+name: Run All Pre-commit Hooks
 
 "on":
     workflow_call:
@@ -20,10 +20,9 @@ env:
     ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
 
 jobs:
-    type-check:
-        name: Run Type Checking
+    pre-commit-all:
+        name: Run All Pre-commit Hooks
         runs-on: ubuntu-22.04
-        continue-on-error: true
         steps:
             - name: Download unified artifacts
               uses: actions/download-artifact@v4
@@ -66,10 +65,11 @@ jobs:
                   python-version: ${{ env.PYTHON_VERSION }}
                   artifacts-dir: ${{ env.ARTIFACTS_DIR }}
 
-            - name: Run static type checking via mypy
+            - name: Run all pre-commit hooks (reproducing local commit flow)
               run: |
                   source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
                   cd "$PROJECT_DIR"
 
-                  # Execute type checking via poetry (reproducing local workflow)
-                  poetry run mypy --ignore-missing-imports solanaexporter/
+                  # This reproduces the exact local commit flow
+                  echo "Running all pre-commit hooks as in local development..."
+                  poetry run pre-commit run --all-files

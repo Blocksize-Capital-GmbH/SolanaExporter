@@ -1,29 +1,75 @@
-name: Lint
+---
+name: Run Code Linting
 
-on:
+"on":
     workflow_call:
+        inputs:
+            python-version:
+                description: "Python version to use"
+                required: false
+                type: string
+                default: "3.12"
+            artifacts-dir:
+                description: "Directory for storing all artifacts"
+                required: false
+                type: string
+                default: "artifacts"
+
+env:
+    PYTHON_VERSION: ${{ inputs.python-version }}
+    ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
 
 jobs:
     lint:
-        runs-on: ubuntu-latest
-
+        name: Run Code Linting
+        runs-on: ubuntu-22.04
         steps:
-            - name: Checkout Code
-              uses: actions/checkout@v3
-
-            - name: Setup Python
-              uses: actions/setup-python@v4
+            - name: Download unified artifacts
+              uses: actions/download-artifact@v4
               with:
-                  python-version: 3.12
+                  name: solanaexporter-artifacts-${{ github.run_id }}
+                  path: ${{ env.ARTIFACTS_DIR }}
 
-            - name: Install Dependencies
+            - name: Copy .github directory to workspace root
               run: |
-                  pip install poetry
-                  poetry install -vv
+                  set -e
+                  echo "=== Copying .github directory from artifacts ==="
+                  ARTIFACTS_PATH="${{ env.ARTIFACTS_DIR }}"
+                  echo "Artifacts directory: $ARTIFACTS_PATH"
+                  echo "Current working directory: $(pwd)"
+                  echo "Workspace: $GITHUB_WORKSPACE"
 
-            - name: Run Linting
+                  # Check for non-hidden github-actions directory first
+                  if [ -d "$ARTIFACTS_PATH/github-actions" ]; then
+                      echo "✓ Found github-actions directory"
+                      echo "Copying github-actions to .github in workspace root..."
+                      cp -r "$ARTIFACTS_PATH/github-actions" "$GITHUB_WORKSPACE/.github"
+                      echo "✓ .github directory copied successfully"
+                  elif [ -d "$ARTIFACTS_PATH/source/.github" ]; then
+                      echo "✓ Found .github directory in source"
+                      echo "Copying .github directory to workspace root..."
+                      cp -r "$ARTIFACTS_PATH/source/.github" "$GITHUB_WORKSPACE/"
+                      echo "✓ .github directory copied successfully"
+                  else
+                      echo "✗ Neither github-actions nor source/.github found"
+                      echo "Available directories in artifacts:"
+                      ls -la "$ARTIFACTS_PATH" || echo "Artifacts directory not found"
+                      echo "Creating minimal .github structure for action to work"
+                      mkdir -p "$GITHUB_WORKSPACE/.github/actions/restore-environment"
+                      echo "Minimal .github structure created as fallback"
+                  fi
+
+            - name: Restore Environment
+              uses: ./.github/actions/restore-environment
+              with:
+                  python-version: ${{ env.PYTHON_VERSION }}
+                  artifacts-dir: ${{ env.ARTIFACTS_DIR }}
+
+            - name: Run linting checks via pre-commit
               run: |
-                  poetry run pre-commit run black --all-files
-                  poetry run pre-commit run isort --all-files
+                  source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
+                  cd "$PROJECT_DIR"
+
+                  # Execute linting checks via pre-commit (reproducing local workflow)
                   poetry run pre-commit run flake8 --all-files
                   poetry run pre-commit run codespell --all-files
