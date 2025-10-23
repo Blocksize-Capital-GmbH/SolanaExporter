@@ -60,6 +60,48 @@ class TestSolanaExporterIntegration(unittest.TestCase):
             self.assertTrue(all(account.is_valid() for account in stake_accounts))
             self.assertTrue(all(account.result is not None for account in stake_accounts))
 
+    @patch.dict("os.environ", {}, clear=True)
+    def test_double_zero_fees_balance_mainnet(self):
+        """Integration test for double_zero_fees_address balance with mainnet address."""
+        # Use mainnet configuration with the specific address
+        mainnet_env = {
+            "SOLANA_RPC_URL": "https://api.mainnet-beta.solana.com",
+            "SOLANA_PUBLIC_RPC_URL": "https://api.mainnet-beta.solana.com",
+            "EXPORTER_PORT": "7896",
+            "POLL_INTERVAL": "120",
+            "VOTE_PUBKEY": "HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib",
+            "VALIDATOR_PUBKEY": "BH6aHw9y4Ejes5KdPYA3ezwERCvJd2zMzGLKze45kfy3",
+            "LABEL": "Integration_Test_Mainnet",
+            "VERSION": "v0.712.30006",
+            "DOUBLE_ZERO_FEES_ADDRESS": "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5",
+        }
+
+        os.environ.update(mainnet_env)
+
+        # Initialize SolanaExporter with environment configuration
+        exporter = SolanaExporter(config_source="fromEnv")
+
+        # Collect metrics
+        exporter.collect_metrics()
+
+        # Validate that double_zero_balance is set and greater than 0
+        double_zero_balance = exporter.double_zero_balance._value.get()
+        self.assertIsNotNone(double_zero_balance, "Double zero balance should be set")
+        self.assertGreater(double_zero_balance, 0, "Double zero balance should be greater than 0")
+
+        # Based on Solscan, the expected balance should be around 4.89 SOL
+        # We'll use a reasonable range to account for any changes
+        self.assertGreater(
+            double_zero_balance, 4.0, f"Double zero balance should be at least 4.0 SOL, got {double_zero_balance}"
+        )
+        self.assertLess(
+            double_zero_balance,
+            10.0,
+            f"Double zero balance should be less than 10.0 SOL (sanity check), got {double_zero_balance}",
+        )
+
+        print(f"\n✓ Double zero fees address balance: {double_zero_balance} SOL")
+
 
 if __name__ == "__main__":
     unittest.main()
