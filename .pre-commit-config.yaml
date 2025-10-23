@@ -23,18 +23,12 @@ repos:
           - id: check-json
           - id: debug-statements
 
-    # Format Python code with autopep8
-    - repo: https://github.com/pre-commit/mirrors-autopep8
-      rev: v2.0.4
-      hooks:
-          - id: autopep8
-            args: [--in-place, --max-line-length=120]
-
-    # Prettier for JSON, YAML, and Markdown formatting
+    # Prettier for JSON, YAML, and Markdown formatting (NOT Python)
     - repo: https://github.com/pre-commit/mirrors-prettier
       rev: v4.0.0-alpha.8
       hooks:
           - id: prettier
+            types_or: [json, yaml, markdown]
             args: ["--tab-width", "4"]
 
     # Upgrade Python syntax for the specified version
@@ -51,7 +45,7 @@ repos:
           - id: isort
             args: [--profile, black]
 
-    # Code formatting with Black
+    # Code formatting with Black (Python only - replaces autopep8)
     - repo: https://github.com/psf/black
       rev: 24.10.0
       hooks:
