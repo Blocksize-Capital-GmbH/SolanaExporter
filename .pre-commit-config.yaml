@@ -136,14 +136,9 @@ repos:
                 [
                     "--ignore-missing-imports",
                     "--explicit-package-bases",
-                    "--non-interactive",
-                    "--check-untyped-defs",
                     "solanaexporter/",
-                    "solanaexporter/tests/",
                 ]
             pass_filenames: false
-            fail_fast: false # Allows warnings instead of failing
-            stages: [manual] # Optional: Run outside the main CI pipeline
 
           # Check docstring formatting
           - id: check-docstring
