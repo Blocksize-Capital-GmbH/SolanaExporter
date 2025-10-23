@@ -1,35 +1,34 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
 ci:
-    autofix_commit_msg: "chore(pre-commit.ci): auto fixes"
+    autofix_commit_msg: |
+        [pre-commit.ci] auto fixes from pre-commit hooks
+
+        for more information, see https://pre-commit.ci
     autofix_prs: true
-    autoupdate_commit_msg: "chore(pre-commit.ci): pre-commit autoupdate"
+    autoupdate_branch: ""
+    autoupdate_commit_msg: "[pre-commit.ci] pre-commit autoupdate"
+    autoupdate_schedule: weekly
+    skip: []
+    submodules: false
 
 repos:
-    # Enforce conventional commit messages with commitizen
-    - repo: https://github.com/commitizen-tools/commitizen
-      rev: v3.31.0
+    # Remove trailing whitespace, end of file newlines, etc.
+    - repo: https://github.com/pre-commit/pre-commit-hooks
+      rev: v6.0.0
       hooks:
-          - id: commitizen
-            stages: [commit-msg]
+          - id: end-of-file-fixer
+          - id: trailing-whitespace
+          - id: check-json
+          - id: debug-statements
 
-    # Ensure Poetry configurations are valid
-    - repo: https://github.com/python-poetry/poetry
-      rev: 1.8.0
-      hooks:
-          - id: poetry-check
-            additional_dependencies: [poetry==1.8.2]
-            stages: [commit-msg]
-
-    # Auto-format Python code with autopep8
-    - repo: https://github.com/hhatto/autopep8
-      rev: v2.3.1
-      hooks:
-          - id: autopep8
-
-    # Prettier for non-Python files (e.g., JSON, YAML)
+    # Prettier for JSON, YAML, and Markdown formatting (NOT Python)
     - repo: https://github.com/pre-commit/mirrors-prettier
       rev: v4.0.0-alpha.8
       hooks:
           - id: prettier
+            types_or: [json, yaml, markdown]
             args: ["--tab-width", "4"]
 
     # Upgrade Python syntax for the specified version
@@ -40,113 +39,87 @@ repos:
             args: [--py37-plus]
 
     # Ensure imports are sorted and formatted correctly
-    - repo: https://github.com/PyCQA/isort
-      rev: 6.0.1
+    - repo: https://github.com/pycqa/isort
+      rev: 5.13.2
       hooks:
           - id: isort
+            args: [--profile, black]
 
-    # Black for consistent Python code formatting
-    - repo: https://github.com/psf/black-pre-commit-mirror
+    # Code formatting with Black (Python only - replaces autopep8)
+    - repo: https://github.com/psf/black
       rev: 24.10.0
       hooks:
           - id: black
-            language_version: python3.12
-            exclude: .*ipynb
+            language_version: python3
+            args: [--line-length=120]
 
+    # Check for common spelling mistakes
     - repo: https://github.com/codespell-project/codespell
       rev: v2.3.0
       hooks:
           - id: codespell
-            args:
-                - --ignore-words-list=assertIn
-            exclude: ^notebooks/|^dataProvidersJobSpecs/|^poetry.lock
+            args: [--ignore-words-list=crate, --skip=**/tests/**]
 
     # Remove unused imports and variables
     - repo: https://github.com/PyCQA/autoflake
       rev: v2.3.1
       hooks:
           - id: autoflake
+            args:
+                [
+                    --in-place,
+                    --remove-all-unused-imports,
+                    --remove-unused-variables,
+                    --expand-star-imports,
+                    --ignore-init-module-imports,
+                ]
 
-    # Lint Python code with flake8
-    - repo: https://github.com/PyCQA/flake8
+    # Flake8 linter for Python
+    - repo: https://github.com/pycqa/flake8
       rev: 7.1.1
       hooks:
           - id: flake8
+            args: [--max-line-length=120, --extend-ignore=E203]
 
-    # Detect security issues with Bandit
+    # Security linter for Python
     - repo: https://github.com/PyCQA/bandit
       rev: 1.7.10
       hooks:
           - id: bandit
-            args: ["-x", "tests", "-c", "pyproject.toml"]
+            args: [-c, pyproject.toml]
+            additional_dependencies: ["bandit[toml]"]
 
-    # Additional pre-commit hooks
-    - repo: https://github.com/pre-commit/pre-commit-hooks
-      rev: v5.0.0
-      hooks:
-          - id: end-of-file-fixer
-            exclude: ^node_modules/
-          - id: trailing-whitespace
-            exclude: ^node_modules/
-          - id: check-json
-            exclude: ^node_modules/
-          - id: debug-statements
-
-    # Local hooks for testing and additional checks
+    # pytest for running tests
     - repo: local
       hooks:
-          # Run pytest for all test cases
           - id: pytest
             name: pytest
-            entry: poetry run pytest
+            entry: pytest
             language: system
-            types: [python]
             pass_filenames: false
             always_run: true
-            exclude: "(venv|\\.venv)"
-            args: ["--disable-warnings", "--no-cov"]
 
-          # Run pytest with coverage analysis
+    # pytest-cov for code coverage
+    - repo: local
+      hooks:
           - id: pytest-cov
             name: pytest-cov
-            args:
-                [
-                    "-v",
-                    "--cov=solanaexporter",
-                    "--color=yes",
-                    "--code-highlight=yes",
-                    "--cov-report=term",
-                    "--cov-report=html",
-                    "--cov-config=.coveragerc",
-                ]
-            entry: poetry run pytest
+            entry: pytest
             language: system
-            types: [python]
             pass_filenames: false
             always_run: true
-            exclude: "(venv|\\.venv)"
-
-          # Type checking with mypy
-          - id: mypy
-            name: mypy
-            entry: poetry run mypy
-            language: system
-            types: [python]
             args:
                 [
-                    "--ignore-missing-imports",
-                    "--explicit-package-bases",
-                    "solanaexporter/",
+                    --cov=solanaexporter,
+                    --cov-report=html,
+                    --cov-report=term,
+                    --cov-fail-under=70,
                 ]
-            pass_filenames: false
 
-          # Check docstring formatting
-          - id: check-docstring
-            name: check-docstring
-            entry: poetry run pydocstyle
-            language: system
-            types: [python]
-            args: ["--convention=google"]
-            pass_filenames: false
-            fail_fast: false # Allows warnings instead of failing
-            stages: [manual] # Optional: Run outside the main CI pipeline
+    # mypy for static type checking
+    - repo: https://github.com/pre-commit/mirrors-mypy
+      rev: v1.13.0
+      hooks:
+          - id: mypy
+            additional_dependencies: [types-requests]
+            args: [--ignore-missing-imports]
