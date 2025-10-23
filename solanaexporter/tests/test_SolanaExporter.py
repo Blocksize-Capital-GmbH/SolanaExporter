@@ -140,6 +140,43 @@ class TestSolanaExporter(unittest.TestCase):
         self.assertEqual(exporter.balance._value.get(), 100)
         # double_zero_balance should not be set (or remain at initial value)
 
+    @patch("os.environ", new_callable=lambda: {})
+    @patch("requests.post")
+    def test_double_zero_fees_address_specific_balance(self, mock_post, mock_env):
+        """Test that double_zero_fees_address balance is correctly retrieved and converted.
+
+        This test verifies the fix for the issue where the balance was showing as zero
+        when the correct environment variable DOUBLE_ZERO_FEES_ADDRESS is used.
+        Test uses address 4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5 with expected balance ~4.89 SOL.
+        """
+        env_with_specific_address = self.env.copy()
+        env_with_specific_address["DOUBLE_ZERO_FEES_ADDRESS"] = "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5"
+        mock_env.update(env_with_specific_address)
+
+        # Mock the response with 4.89 SOL (in lamports: 4.89 * 1_000_000_000 = 4_890_000_000)
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = [
+            {"result": 12345},  # getSlot
+            {"result": {"value": 100_000_000_000}},  # getBalance (validator)
+            {"result": {"value": 4_890_000_000}},  # getBalance (double_zero_fees_address: 4.89 SOL)
+            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
+            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
+            {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
+            {
+                "result": {"value": {"byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}}}
+            },  # getBlockProduction
+            {"result": "ok"},  # getHealth
+        ]
+
+        exporter = SolanaExporter(config_source="fromEnv")
+        exporter.collect_metrics()
+
+        # Verify the balance is correctly set to 4.89 SOL (not 0)
+        self.assertEqual(exporter.double_zero_balance._value.get(), 4.89)
+        self.assertGreater(exporter.double_zero_balance._value.get(), 0)
+        # Verify the address was correctly read from config
+        self.assertEqual(exporter.config.double_zero_fees_address, "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5")
+
 
 if __name__ == "__main__":
     unittest.main()
