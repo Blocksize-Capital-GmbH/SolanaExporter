@@ -15,7 +15,7 @@ STAKE_PROGRAM_ID: PublicKey = PublicKey.from_string("Stake1111111111111111111111
 
 
 async def main():
-    """Example async helper to print stake program accounts matching a memcmp filter."""
+    """Print stake program accounts matching a memcmp filter (example helper)."""
     client = AsyncClient("https://api.mainnet-beta.solana.com", Confirmed)
     print("Connecting...")
     await client.is_connected()
