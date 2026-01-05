@@ -236,9 +236,7 @@ class SolanaExporter(RPCExporter):
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
             elif idx == 5 + idx_offset:  # getBlockProduction
-                self._update_block_production_metrics(
-                    block_production_data=result, identity_pubkey=active_identity
-                )
+                self._update_block_production_metrics(block_production_data=result, identity_pubkey=active_identity)
             elif idx == 6 + idx_offset:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
@@ -435,9 +433,7 @@ class SolanaExporter(RPCExporter):
 
     def _update_block_production_metrics(self, block_production_data, identity_pubkey: str):
         """Update block production metrics."""
-        production_stats = (
-            block_production_data.get("value", {}).get("byIdentity", {}).get(identity_pubkey, [])
-        )
+        production_stats = block_production_data.get("value", {}).get("byIdentity", {}).get(identity_pubkey, [])
         if production_stats and len(production_stats) == 2:
             leader_slots = production_stats[0]
             blocks_produced = production_stats[1]

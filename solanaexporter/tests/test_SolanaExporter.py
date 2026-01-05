@@ -38,9 +38,7 @@ class TestSolanaExporter(unittest.TestCase):
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
             {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule (identity pubkey)
-            {
-                "result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
         mock_post.side_effect = [resp_identity, resp_batch]
@@ -56,17 +54,14 @@ class TestSolanaExporter(unittest.TestCase):
         self.assertEqual(build_info_labels.get("version"), "0.708.20306")
         self.assertEqual(build_info_labels.get("label"), "Blocksize_Testnet_Main")
         # Info gauge should exist and be set
-        info_value = (
-            exporter.validator_info.labels(
-                exporter.hostname,
-                "unstaked",
-                "unknown",
-                self.env["VALIDATOR_PUBKEY"],
-                self.env["VOTE_PUBKEY"],
-                self.env["LABEL"],
-            )
-            ._value.get()
-        )
+        info_value = exporter.validator_info.labels(
+            exporter.hostname,
+            "unstaked",
+            "unknown",
+            self.env["VALIDATOR_PUBKEY"],
+            self.env["VOTE_PUBKEY"],
+            self.env["LABEL"],
+        )._value.get()
         self.assertEqual(info_value, 1)
 
     @patch("requests.post")
@@ -152,9 +147,7 @@ class TestSolanaExporter(unittest.TestCase):
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
             {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
-            {
-                "result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
         mock_post.side_effect = [resp_identity, resp_batch]
@@ -194,9 +187,7 @@ class TestSolanaExporter(unittest.TestCase):
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
             {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
-            {
-                "result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
         mock_post.side_effect = [resp_identity, resp_batch]
@@ -242,17 +233,14 @@ class TestSolanaExporter(unittest.TestCase):
         exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
 
-        info_value = (
-            exporter.validator_info.labels(
-                exporter.hostname,
-                "unstaked",  # from vote accounts (empty)
-                "unstaked",
-                "IDENTITY_UNSTAKED",
-                env["VOTE_PUBKEY"],
-                env["LABEL"],
-            )
-            ._value.get()
-        )
+        info_value = exporter.validator_info.labels(
+            exporter.hostname,
+            "unstaked",  # from vote accounts (empty)
+            "unstaked",
+            "IDENTITY_UNSTAKED",
+            env["VOTE_PUBKEY"],
+            env["LABEL"],
+        )._value.get()
         self.assertEqual(info_value, 1)
 
 
