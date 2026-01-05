@@ -1,3 +1,5 @@
+"""Prometheus exporter for Solana validator metrics."""
+
 import os
 import socket
 import time
@@ -31,7 +33,10 @@ ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
 
 
 class SolanaExporter(RPCExporter):
+    """Collect and expose Solana validator metrics via Prometheus."""
+
     def __init__(self, config_source: str, config_file: Optional[str] = None):
+        """Initialize the exporter and register Prometheus metrics."""
         super().__init__(
             config_source=config_source,
             config_file=config_file,
@@ -318,7 +323,6 @@ class SolanaExporter(RPCExporter):
 
     def _get_stake_accounts(self) -> List[JsonRPCResponse]:
         """Query stake accounts using the public RPC endpoint."""
-
         program_id = "Stake11111111111111111111111111111111111111"
         filters = [
             {"dataSize": 200},

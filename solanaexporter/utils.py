@@ -1,3 +1,8 @@
+"""Utility helpers for SolanaExporter.
+
+This module currently contains development/debug helpers used during integration work.
+"""
+
 import os
 
 import requests
@@ -10,6 +15,7 @@ STAKE_PROGRAM_ID: PublicKey = PublicKey.from_string("Stake1111111111111111111111
 
 
 async def main():
+    """Example async helper to print stake program accounts matching a memcmp filter."""
     client = AsyncClient("https://api.mainnet-beta.solana.com", Confirmed)
     print("Connecting...")
     await client.is_connected()
@@ -27,6 +33,7 @@ async def main():
 
 
 def get_transaction_count(public_key):
+    """Return the total number of transactions for a given address via getSignaturesForAddress."""
     headers = {"Content-Type": "application/json"}
     offset = 0
     limit = 1000  # Fetch 1000 transactions per request
