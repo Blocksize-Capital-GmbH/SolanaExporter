@@ -18,21 +18,21 @@
 
 ### Key Features
 
--   📊 **Comprehensive Metrics**: Slot height, sync status, stake delegation, vote distance, block production
--   🏥 **Health Monitoring**: Real-time validator health status and sync lag tracking
--   💰 **Stake Tracking**: Monitor total delegated stake, pending stake, and delinquent stake
--   🎯 **Block Production**: Track leader slots, block production success rate, and missed slots
--   🔄 **Automatic Polling**: Configurable polling intervals for optimal monitoring
--   🐳 **Docker Ready**: Container support with health checks and proper error handling
--   📈 **Prometheus Compatible**: Standard Prometheus exposition format
+- 📊 **Comprehensive Metrics**: Slot height, sync status, stake delegation, vote distance, block production
+- 🏥 **Health Monitoring**: Real-time validator health status and sync lag tracking
+- 💰 **Stake Tracking**: Monitor total delegated stake, pending stake, and delinquent stake
+- 🎯 **Block Production**: Track leader slots, block production success rate, and missed slots
+- 🔄 **Automatic Polling**: Configurable polling intervals for optimal monitoring
+- 🐳 **Docker Ready**: Container support with health checks and proper error handling
+- 📈 **Prometheus Compatible**: Standard Prometheus exposition format
 
 ## Quick Start
 
 ### Prerequisites
 
--   Python 3.9+ or Docker
--   Access to a Solana RPC endpoint
--   Validator public key and vote account public key
+- Python 3.9+ or Docker
+- Access to a Solana RPC endpoint
+- Validator public key and vote account public key
 
 ### Installation
 
@@ -106,6 +106,9 @@ EXPORTER_ENV=/path/to/.env python solanaexporter/solanaExporter.py
 | -------------------------- | --------------------------------------- | ---------------------------------- |
 | `DOUBLE_ZERO_FEES_ADDRESS` | Address to monitor for balance tracking | `11111111111111111111111111111111` |
 | `STAKE_ACCOUNT_PUBKEY`     | Specific stake account to monitor       | `YourStakeAccount...`              |
+| `EXPORTER_HOSTNAME`        | Stable hostname label for metrics       | `validator-1`                      |
+| `STAKED_IDENTITY_PUBKEY`   | Primary identity pubkey (failover role) | `YourPrimaryIdentity...`           |
+| `UNSTAKED_IDENTITY_PUBKEY` | Backup identity pubkey (failover role)  | `YourBackupIdentity...`            |
 
 ### Finding Your Validator Keys
 
@@ -123,35 +126,48 @@ The exporter provides the following Prometheus metrics:
 
 ### Core Validator Metrics
 
--   `solana_slot_number` - Current slot number of your validator
--   `solana_absolute_slot_number` - Absolute slot number of the Solana chain
--   `solana_slot_lag` - Slot lag between your validator and the network
--   `solana_sync_status` - Node sync status (1 = synced, 0 = not synced)
--   `solana_health_status` - Overall health status of the node
--   `solana_epoch` - Current Solana epoch
+- `solana_slot_number` - Current slot number of your validator
+- `solana_absolute_slot_number` - Absolute slot number of the Solana chain
+- `solana_slot_lag` - Slot lag between your validator and the network
+- `solana_sync_status` - Node sync status (1 = synced, 0 = not synced)
+- `solana_health_status` - Overall health status of the node
+- `solana_epoch` - Current Solana epoch
 
 ### Stake Metrics
 
--   `solana_total_delegated_stake` - Total stake delegated to the validator (in SOL)
--   `solana_pending_stake` - Stake delegated but not yet active (in SOL)
--   `solana_delinquent_stake` - Stake that is delinquent (in SOL)
+- `solana_total_delegated_stake` - Total stake delegated to the validator (in SOL)
+- `solana_pending_stake` - Stake delegated but not yet active (in SOL)
+- `solana_delinquent_stake` - Stake that is delinquent (in SOL)
 
 ### Performance Metrics
 
--   `solana_missed_slots` - Number of slots missed by the validator
--   `solana_leader_status` - Current leader status (1 = leader, 0 = not leader)
--   `solana_vote_distance` - Vote distance from the highest known slot
--   `solana_block_production_success` - Block production success rate
--   `solana_credits_earned` - Vote credits earned
+- `solana_missed_slots` - Number of slots missed by the validator
+- `solana_leader_status` - Current leader status (1 = leader, 0 = not leader)
+- `solana_vote_distance` - Vote distance from the highest known slot
+- `solana_block_production_success` - Block production success rate
+- `solana_credits_earned` - Vote credits earned
 
 ### Account Metrics
 
--   `solana_account_balance` - Validator account balance (in SOL)
--   `solana_double_zero_balance` - Balance of monitored address (in SOL, if configured)
+- `solana_account_balance` - Validator account balance (in SOL)
+- `solana_double_zero_balance` - Balance of monitored address (in SOL, if configured)
 
 ### Timing Metrics
 
--   `solana_slot_time` - Time taken to process a slot (seconds)
+- `solana_slot_time` - Time taken to process a slot (seconds)
+
+### Info / Labels
+
+- `solana_validator_info` - Gauge (value=1) with labels:
+    - `hostname`: stable instance name (use `EXPORTER_HOSTNAME` in containers)
+    - `stake_state`: derived from vote-account stake (`staked|unstaked|unknown`)
+    - `identity_role`: derived from the _active identity key_ (`staked|unstaked|unknown`) when `STAKED_IDENTITY_PUBKEY` / `UNSTAKED_IDENTITY_PUBKEY` are provided
+    - `identity_pubkey`: active identity from `getIdentity`
+    - `vote_pubkey`: configured vote account pubkey
+    - `instance_label`: configured `LABEL`
+
+If you run a failover setup where a node can switch between two identity keys, build alerts/dashboards
+around `identity_role` (not a hostname suffix), so the label automatically follows the active key.
 
 ## Deployment
 
@@ -254,11 +270,11 @@ groups:
 
 Create visualizations for:
 
--   **Sync Status Panel**: Real-time sync status and slot lag
--   **Performance Panel**: Block production rate, missed slots, vote distance
--   **Stake Panel**: Total delegated stake, pending activations, delinquent stake
--   **Health Panel**: Overall validator health and uptime
--   **Network Panel**: Epoch progress, slot time, leader schedule
+- **Sync Status Panel**: Real-time sync status and slot lag
+- **Performance Panel**: Block production rate, missed slots, vote distance
+- **Stake Panel**: Total delegated stake, pending activations, delinquent stake
+- **Health Panel**: Overall validator health and uptime
+- **Network Panel**: Epoch progress, slot time, leader schedule
 
 ## Troubleshooting
 
@@ -413,10 +429,10 @@ We welcome contributions! Please:
 
 ## Security
 
--   Exporter requires read-only RPC access
--   No private keys are stored or transmitted
--   All metrics are public validator data
--   Configuration files should be protected (contain public keys only)
+- Exporter requires read-only RPC access
+- No private keys are stored or transmitted
+- All metrics are public validator data
+- Configuration files should be protected (contain public keys only)
 
 For security issues, please contact: security@blocksize-capital.com
 

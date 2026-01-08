@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from solanaexporter.solanaExporter import SolanaExporter
 
@@ -24,19 +24,24 @@ class TestSolanaExporter(unittest.TestCase):
     def test_collect_metrics(self, mock_post, mock_env):
         """Test metrics collection."""
         mock_env.update(self.env)
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = [
+        # collect_metrics() does getIdentity first, then a batched POST for the rest.
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
+
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        resp_batch.json.return_value = [
             {"result": 12345},  # getSlot
             {"result": {"value": 100_000_000_000}},  # getBalance
             {"result": {"value": 50_000_000_000}},  # getBalance (double_zero_fees_address)
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
-            {
-                "result": {"value": {"byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule (identity pubkey)
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
+        mock_post.side_effect = [resp_identity, resp_batch]
 
         exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
@@ -48,6 +53,16 @@ class TestSolanaExporter(unittest.TestCase):
         build_info_labels = exporter.build_info._value
         self.assertEqual(build_info_labels.get("version"), "0.708.20306")
         self.assertEqual(build_info_labels.get("label"), "Blocksize_Testnet_Main")
+        # Info gauge should exist and be set
+        info_value = exporter.validator_info.labels(
+            exporter.hostname,
+            "unstaked",
+            "unknown",
+            self.env["VALIDATOR_PUBKEY"],
+            self.env["VOTE_PUBKEY"],
+            self.env["LABEL"],
+        )._value.get()
+        self.assertEqual(info_value, 1)
 
     @patch("requests.post")
     @patch.dict(
@@ -119,19 +134,23 @@ class TestSolanaExporter(unittest.TestCase):
         # Setup environment without DOUBLE_ZERO_FEES_ADDRESS
         env_without_double_zero = {k: v for k, v in self.env.items() if k != "DOUBLE_ZERO_FEES_ADDRESS"}
         mock_env.update(env_without_double_zero)
-        mock_post.return_value.status_code = 200
-        # Without double_zero, we have 7 requests instead of 8
-        mock_post.return_value.json.return_value = [
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
+
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        # Without double_zero, we have 7 requests in the batch
+        resp_batch.json.return_value = [
             {"result": 12345},  # getSlot
             {"result": {"value": 100_000_000_000}},  # getBalance
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
-            {
-                "result": {"value": {"byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
+        mock_post.side_effect = [resp_identity, resp_batch]
 
         exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
@@ -153,20 +172,25 @@ class TestSolanaExporter(unittest.TestCase):
         env_with_specific_address["DOUBLE_ZERO_FEES_ADDRESS"] = "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5"
         mock_env.update(env_with_specific_address)
 
-        # Mock the response with 4.89 SOL (in lamports: 4.89 * 1_000_000_000 = 4_890_000_000)
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = [
+        # collect_metrics() does getIdentity first, then a batched POST for the rest.
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
+
+        # Mock the batch response with 4.89 SOL (in lamports: 4.89 * 1_000_000_000 = 4_890_000_000)
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        resp_batch.json.return_value = [
             {"result": 12345},  # getSlot
             {"result": {"value": 100_000_000_000}},  # getBalance (validator)
             {"result": {"value": 4_890_000_000}},  # getBalance (double_zero_fees_address: 4.89 SOL)
             {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
             {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {"6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL": [1, 2, 3]}},  # getLeaderSchedule
-            {
-                "result": {"value": {"byIdentity": {"4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc": [1, 2]}}}
-            },  # getBlockProduction
+            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
             {"result": "ok"},  # getHealth
         ]
+        mock_post.side_effect = [resp_identity, resp_batch]
 
         exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
@@ -176,6 +200,48 @@ class TestSolanaExporter(unittest.TestCase):
         self.assertGreater(exporter.double_zero_balance._value.get(), 0)
         # Verify the address was correctly read from config
         self.assertEqual(exporter.config.double_zero_fees_address, "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5")
+
+    @patch("os.environ", new_callable=lambda: {})
+    @patch("requests.post")
+    def test_identity_role_label(self, mock_post, mock_env):
+        """identity_role should reflect getIdentity when STAKED/UNSTAKED keys are configured."""
+        env = dict(self.env)
+        env["STAKED_IDENTITY_PUBKEY"] = "IDENTITY_STAKED"
+        env["UNSTAKED_IDENTITY_PUBKEY"] = "IDENTITY_UNSTAKED"
+        env["VALIDATOR_PUBKEY"] = "IDENTITY_STAKED"
+        mock_env.update(env)
+
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": "IDENTITY_UNSTAKED"}}]
+
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        # Minimal batch response (double_zero is configured in env, so include it)
+        resp_batch.json.return_value = [
+            {"result": 1},  # getSlot
+            {"result": {"value": 0}},  # getBalance (active identity)
+            {"result": {"value": 0}},  # getBalance (double_zero_fees_address)
+            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
+            {"result": {"absoluteSlot": 1, "epoch": 1}},  # getEpochInfo
+            {"result": {}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {}}}},  # getBlockProduction
+            {"result": "ok"},  # getHealth
+        ]
+        mock_post.side_effect = [resp_identity, resp_batch]
+
+        exporter = SolanaExporter(config_source="fromEnv")
+        exporter.collect_metrics()
+
+        info_value = exporter.validator_info.labels(
+            exporter.hostname,
+            "unstaked",  # from vote accounts (empty)
+            "unstaked",
+            "IDENTITY_UNSTAKED",
+            env["VOTE_PUBKEY"],
+            env["LABEL"],
+        )._value.get()
+        self.assertEqual(info_value, 1)
 
 
 if __name__ == "__main__":
