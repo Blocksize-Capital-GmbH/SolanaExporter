@@ -156,7 +156,10 @@ class SolanaExporter(RPCExporter):
         those automatically follow failovers (identity key changes), we probe getIdentity first
         and use the active identity for the subsequent batch.
         """
-        active_identity = self._get_active_identity() or self.config.validator_pubkey
+        # Use getIdentity for *labeling* (identity_pubkey/identity_role). If it is unavailable,
+        # keep labels conservative (unknown) and only fall back to VALIDATOR_PUBKEY for RPC queries.
+        identity_from_rpc = self._get_active_identity()
+        identity_for_queries = identity_from_rpc or self.config.validator_pubkey
 
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 != 0:
@@ -165,7 +168,7 @@ class SolanaExporter(RPCExporter):
 
         rpc_requests: List[JsonRPCRequest] = [
             JsonRPCRequest("getSlot"),
-            JsonRPCRequest("getBalance", params=[active_identity]),
+            JsonRPCRequest("getBalance", params=[identity_for_queries]),
         ]
 
         # Track if we're requesting double_zero_balance
@@ -191,6 +194,9 @@ class SolanaExporter(RPCExporter):
             )
             self.health_status.set(0)
             self.sync_status.set(0)
+            # Avoid stale stake/identity labeling during outages.
+            self._stake_state = "unknown"
+            self._update_validator_info(identity_pubkey=identity_from_rpc)
             return
 
         vote_accounts_result = None
@@ -232,11 +238,13 @@ class SolanaExporter(RPCExporter):
                 epoch_info_result = result
             elif idx == 4 + idx_offset:  # getLeaderSchedule
                 # getLeaderSchedule keys are identity pubkeys, not vote pubkeys.
-                is_leader: bool = isinstance(result, dict) and active_identity in result
+                is_leader: bool = isinstance(result, dict) and identity_for_queries in result
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
             elif idx == 5 + idx_offset:  # getBlockProduction
-                self._update_block_production_metrics(block_production_data=result, identity_pubkey=active_identity)
+                self._update_block_production_metrics(
+                    block_production_data=result, identity_pubkey=identity_for_queries
+                )
             elif idx == 6 + idx_offset:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
@@ -249,7 +257,7 @@ class SolanaExporter(RPCExporter):
         self._update_vote_distance(vote_accounts_result, epoch_info_result)
         # update metrics from config file
         self._update_build_info()
-        self._update_validator_info(identity_pubkey=active_identity)
+        self._update_validator_info(identity_pubkey=identity_from_rpc)
 
     def _get_active_identity(self) -> Optional[str]:
         """Fetch getIdentity.identity from the node RPC."""

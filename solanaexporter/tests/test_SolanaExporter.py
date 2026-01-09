@@ -243,6 +243,49 @@ class TestSolanaExporter(unittest.TestCase):
         )._value.get()
         self.assertEqual(info_value, 1)
 
+    @patch("os.environ", new_callable=lambda: {})
+    @patch("requests.post")
+    def test_identity_role_unknown_when_getidentity_fails(self, mock_post, mock_env):
+        """identity_role should be unknown when getIdentity cannot be retrieved."""
+        env = dict(self.env)
+        env["STAKED_IDENTITY_PUBKEY"] = "IDENTITY_STAKED"
+        env["UNSTAKED_IDENTITY_PUBKEY"] = "IDENTITY_UNSTAKED"
+        # VALIDATOR_PUBKEY may be configured as the staked identity, but labels must not lie.
+        env["VALIDATOR_PUBKEY"] = "IDENTITY_STAKED"
+        mock_env.update(env)
+
+        # Simulate getIdentity failure (HTTP ok but RPC error payload is treated as unsuccessful)
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"error": {"code": -32000, "message": "node is behind"}}]
+
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        resp_batch.json.return_value = [
+            {"result": 1},  # getSlot
+            {"result": {"value": 0}},  # getBalance (falls back to VALIDATOR_PUBKEY for query)
+            {"result": {"value": 0}},  # getBalance (double_zero_fees_address)
+            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
+            {"result": {"absoluteSlot": 1, "epoch": 1}},  # getEpochInfo
+            {"result": {}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {}}}},  # getBlockProduction
+            {"result": "ok"},  # getHealth
+        ]
+        mock_post.side_effect = [resp_identity, resp_batch]
+
+        exporter = SolanaExporter(config_source="fromEnv")
+        exporter.collect_metrics()
+
+        info_value = exporter.validator_info.labels(
+            exporter.hostname,
+            "unstaked",  # from empty vote accounts => 0 stake => unstaked
+            "unknown",
+            "unknown",
+            env["VOTE_PUBKEY"],
+            env["LABEL"],
+        )._value.get()
+        self.assertEqual(info_value, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
