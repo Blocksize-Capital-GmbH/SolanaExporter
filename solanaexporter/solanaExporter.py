@@ -25,6 +25,7 @@ REQUIRED_CONFIG_KEYS = {
 # Optional configuration keys - these can be omitted
 OPTIONAL_CONFIG_KEYS = {
     "double_zero_fees_address": "DOUBLE_ZERO_FEES_ADDRESS",
+    "jpool_bond_withdrawer_authority": "JPOOL_BOND_WITHDRAWER_AUTHORITY",
 }
 
 # All configuration keys combined
@@ -148,6 +149,16 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
 
+        self._has_jpool_bond = (
+            hasattr(self.config, "jpool_bond_withdrawer_authority") and self.config.jpool_bond_withdrawer_authority
+        )
+        if self._has_jpool_bond:
+            self.jpool_bond_balance = Gauge(
+                name="solana_jpool_bond_balance",
+                documentation="JPool validator bond balance (in SOL)",
+                registry=self.registry,
+            )
+
         self.programAccountsCallCounter: int = -1
         self.stake_accounts: List[JsonRPCResponse] = []
         self.last_absolute_slot: Optional[int] = None
@@ -158,6 +169,8 @@ class SolanaExporter(RPCExporter):
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 != 0:
             self.stake_accounts = self._get_stake_accounts()
+            if self._has_jpool_bond:
+                self._get_jpool_bond_balance()
             self.programAccountsCallCounter = 0
 
         rpc_requests: List[JsonRPCRequest] = [
@@ -410,6 +423,51 @@ class SolanaExporter(RPCExporter):
                 break
         self.credits_earned.set(credits)
         self.logger.debug(f"Updated credits earned: {credits}")
+
+    def _get_jpool_bond_balance(self) -> None:
+        """Query and update the JPool bond balance from on-chain stake accounts.
+
+        Bond-funded stake accounts are identified by their withdrawal authority
+        (the bonds_withdrawer_authority PDA) and voter (the validator's vote account).
+        Stake account layout offsets: withdrawer at byte 44, voter at byte 124.
+        """
+        program_id = "Stake11111111111111111111111111111111111111"
+        filters = [
+            {"dataSize": 200},
+            {
+                "memcmp": {
+                    "offset": 44,
+                    "bytes": self.config.jpool_bond_withdrawer_authority,
+                }
+            },
+            {
+                "memcmp": {
+                    "offset": 124,
+                    "bytes": self.config.vote_pubkey,
+                }
+            },
+        ]
+        request = JsonRPCRequest(
+            method="getProgramAccounts",
+            params=[
+                program_id,
+                {"filters": filters, "encoding": "base64"},
+            ],
+        )
+
+        responses: List[JsonRPCResponse] = JsonRPCRequest.send(
+            rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger
+        )
+
+        total_lamports = 0
+        for response in responses:
+            if response.is_valid() and response.result is not None:
+                for account in response.result:
+                    total_lamports += account.get("account", {}).get("lamports", 0)
+
+        bond_balance_sol = total_lamports / 1_000_000_000
+        self.jpool_bond_balance.set(bond_balance_sol)
+        self.logger.debug(f"Updated JPool bond balance: {bond_balance_sol} SOL ({total_lamports} lamports)")
 
     def _update_build_info(self) -> None:
         """Update build information with version and label as string values."""
