@@ -26,6 +26,7 @@ REQUIRED_CONFIG_KEYS = {
 # Optional configuration keys - these can be omitted
 OPTIONAL_CONFIG_KEYS = {
     "double_zero_fees_address": "DOUBLE_ZERO_FEES_ADDRESS",
+    "jpool_bond_withdrawer_authority": "JPOOL_BOND_WITHDRAWER_AUTHORITY",
 }
 
 # All configuration keys combined
@@ -57,77 +58,93 @@ class SolanaExporter(RPCExporter):
 
         # Prometheus metrics setup
         self.slot_number = Gauge(
-            "solana_slot_number",
-            "Current slot number of the Solana validator",
+            name="solana_slot_number",
+            documentation="Current slot number of the Solana validator",
             registry=self.registry,
         )
         self.absolute_slot_number = Gauge(
-            "solana_absolute_slot_number",
-            "Absolute slot number of the Solana chain",
+            name="solana_absolute_slot_number",
+            documentation="Absolute slot number of the Solana chain",
             registry=self.registry,
         )
         self.slot_lag = Gauge(
-            "solana_slot_lag",
-            "Slot number lag of validator vs the Solana chain",
+            name="solana_slot_lag",
+            documentation="Slot number lag of validator vs the Solana chain",
             registry=self.registry,
         )
         self.sync_status = Gauge(
-            "solana_sync_status",
-            "Node sync status (1 for synced, 0 for not synced)",
+            name="solana_sync_status",
+            documentation="Node sync status (1 for synced, 0 for not synced)",
             registry=self.registry,
         )
         self.slot_time = Gauge(
-            "solana_slot_time",
-            "Time taken to process a slot",
+            name="solana_slot_time",
+            documentation="Time taken to process a slot",
             registry=self.registry,
         )
         self.epoch = Gauge(
-            "solana_epoch",
-            "Current Solana epoch",
+            name="solana_epoch",
+            documentation="Current Solana epoch",
             registry=self.registry,
         )
-        self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.balance = Gauge(
+            name="solana_account_balance",
+            documentation="Validator's account balance",
+            registry=self.registry,
+        )
         self.double_zero_balance = Gauge(
-            "solana_double_zero_balance",
-            "Balance of the double zero fees address",
+            name="solana_double_zero_balance",
+            documentation="Balance of the double zero fees address",
             registry=self.registry,
         )
-        self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
+        self.health_status = Gauge(
+            name="solana_health_status",
+            documentation="Health status of the Solana node",
+            registry=self.registry,
+        )
         self.total_delegated_stake = Gauge(
-            "solana_total_delegated_stake",
-            "Total stake delegated to the validator",
+            name="solana_total_delegated_stake",
+            documentation="Total stake delegated to the validator",
             registry=self.registry,
         )
-        self.delinquent_stake = Gauge("solana_delinquent_stake", "Stake that is delinquent", registry=self.registry)
+        self.delinquent_stake = Gauge(
+            name="solana_delinquent_stake",
+            documentation="Stake that is delinquent",
+            registry=self.registry,
+        )
         self.pending_stake = Gauge(
-            "solana_pending_stake",
-            "Stake that is delegated but not active yet",
+            name="solana_pending_stake",
+            documentation="Stake that is delegated but not active yet",
             registry=self.registry,
         )
         self.missed_slots = Gauge(
-            "solana_missed_slots",
-            "Number of slots missed by the validator",
+            name="solana_missed_slots",
+            documentation="Number of slots missed by the validator",
             registry=self.registry,
         )
-        self.leader_status = Gauge("solana_leader_status", "Leader status (1 or 0)", registry=self.registry)
+        self.leader_status = Gauge(
+            name="solana_leader_status",
+            documentation="Leader status (1 or 0)",
+            registry=self.registry,
+        )
         self.vote_distance = Gauge(
-            "solana_vote_distance",
-            "Vote distance from the highest known slot",
+            name="solana_vote_distance",
+            documentation="Vote distance from the highest known slot",
             registry=self.registry,
         )
         self.block_production_success = Gauge(
-            "solana_block_production_success",
-            "Block production status (1 for success, 0 for failure)",
+            name="solana_block_production_success",
+            documentation="Block production status (1 for success, 0 for failure)",
             registry=self.registry,
         )
         self.credits_earned = Gauge(
-            "solana_credits_earned",
-            "Total vote credits earned by the validator",
+            name="solana_credits_earned",
+            documentation="Total vote credits earned by the validator",
             registry=self.registry,
         )
         self.build_info = Info(
-            "solana_build",
-            "Build information including version and instance label",
+            name="solana_build",
+            documentation="Build information including version and instance label",
             registry=self.registry,
         )
         self.validator_info = Gauge(
@@ -144,10 +161,20 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
 
+        self._has_jpool_bond = (
+            hasattr(self.config, "jpool_bond_withdrawer_authority") and self.config.jpool_bond_withdrawer_authority
+        )
+        if self._has_jpool_bond:
+            self.jpool_bond_balance = Gauge(
+                name="solana_jpool_bond_balance",
+                documentation="JPool validator bond balance (in SOL)",
+                registry=self.registry,
+            )
+
         self.programAccountsCallCounter: int = -1
         self.stake_accounts: List[JsonRPCResponse] = []
-        self.last_absolute_slot = None
-        self.last_timestamp = None
+        self.last_absolute_slot: Optional[int] = None
+        self.last_timestamp: Optional[float] = None
 
     def collect_metrics(self):
         """Collect metrics.
@@ -156,14 +183,15 @@ class SolanaExporter(RPCExporter):
         those automatically follow failovers (identity key changes), we probe getIdentity first
         and use the active identity for the subsequent batch.
         """
-        # Use getIdentity for *labeling* (identity_pubkey/identity_role). If it is unavailable,
-        # keep labels conservative (unknown) and only fall back to VALIDATOR_PUBKEY for RPC queries.
         identity_from_rpc = self._get_active_identity()
         identity_for_queries = identity_from_rpc or self.config.validator_pubkey
+
 
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 != 0:
             self.stake_accounts = self._get_stake_accounts()
+            if self._has_jpool_bond:
+                self._get_jpool_bond_balance()
             self.programAccountsCallCounter = 0
 
         rpc_requests: List[JsonRPCRequest] = [
@@ -466,6 +494,51 @@ class SolanaExporter(RPCExporter):
                 break
         self.credits_earned.set(credits)
         self.logger.debug(f"Updated credits earned: {credits}")
+
+    def _get_jpool_bond_balance(self) -> None:
+        """Query and update the JPool bond balance from on-chain stake accounts.
+
+        Bond-funded stake accounts are identified by their withdrawal authority
+        (the bonds_withdrawer_authority PDA) and voter (the validator's vote account).
+        Stake account layout offsets: withdrawer at byte 44, voter at byte 124.
+        """
+        program_id = "Stake11111111111111111111111111111111111111"
+        filters = [
+            {"dataSize": 200},
+            {
+                "memcmp": {
+                    "offset": 44,
+                    "bytes": self.config.jpool_bond_withdrawer_authority,
+                }
+            },
+            {
+                "memcmp": {
+                    "offset": 124,
+                    "bytes": self.config.vote_pubkey,
+                }
+            },
+        ]
+        request = JsonRPCRequest(
+            method="getProgramAccounts",
+            params=[
+                program_id,
+                {"filters": filters, "encoding": "base64"},
+            ],
+        )
+
+        responses: List[JsonRPCResponse] = JsonRPCRequest.send(
+            rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger
+        )
+
+        total_lamports = 0
+        for response in responses:
+            if response.is_valid() and response.result is not None:
+                for account in response.result:
+                    total_lamports += account.get("account", {}).get("lamports", 0)
+
+        bond_balance_sol = total_lamports / 1_000_000_000
+        self.jpool_bond_balance.set(bond_balance_sol)
+        self.logger.debug(f"Updated JPool bond balance: {bond_balance_sol} SOL ({total_lamports} lamports)")
 
     def _update_build_info(self) -> None:
         """Update build information with version and label as string values."""

@@ -72,4 +72,38 @@ jobs:
 
                   # This reproduces the exact local commit flow
                   echo "Running all pre-commit hooks as in local development..."
-                  poetry run pre-commit run --all-files
+                  poetry run pre-commit run --all-files || true
+
+            - name: Check for changes made by pre-commit
+              id: check_changes
+              run: |
+                  source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
+                  cd "$PROJECT_DIR"
+
+                  if [[ -n $(git status --porcelain) ]]; then
+                      echo "changes=true" >> $GITHUB_OUTPUT
+                      echo "Pre-commit hooks made changes to the following files:"
+                      git status --short
+                  else
+                      echo "changes=false" >> $GITHUB_OUTPUT
+                      echo "No changes made by pre-commit hooks"
+                  fi
+
+            - name: Commit and push changes
+              if: steps.check_changes.outputs.changes == 'true'
+              run: |
+                  source "${{ env.ARTIFACTS_DIR }}/python-env.sh"
+                  cd "$PROJECT_DIR"
+
+                  git config --local user.email "github-actions[bot]@users.noreply.github.com"
+                  git config --local user.name "github-actions[bot]"
+                  git add -A
+                  git commit -m "style: auto-fix pre-commit hooks [skip ci]"
+                  git push
+
+            - name: Fail if changes were needed
+              if: steps.check_changes.outputs.changes == 'true'
+              run: |
+                  echo "::warning::Pre-commit hooks made changes. Changes have been committed automatically."
+                  echo "Please pull the latest changes before your next commit."
+                  exit 1

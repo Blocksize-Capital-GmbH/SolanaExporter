@@ -71,7 +71,7 @@ jobs:
                   cd "$PROJECT_DIR"
 
                   # Execute formatting checks via pre-commit (reproducing local workflow)
-                  poetry run pre-commit run autopep8 --all-files
+                  # Note: autopep8 removed - Black handles all Python formatting
                   poetry run pre-commit run prettier --all-files
-                  poetry run pre-commit run black --all-files
                   poetry run pre-commit run isort --all-files
+                  poetry run pre-commit run black --all-files

@@ -102,13 +102,14 @@ EXPORTER_ENV=/path/to/.env python solanaexporter/solanaExporter.py
 
 ### Optional Configuration
 
-| Variable                   | Description                             | Example                            |
-| -------------------------- | --------------------------------------- | ---------------------------------- |
-| `DOUBLE_ZERO_FEES_ADDRESS` | Address to monitor for balance tracking | `11111111111111111111111111111111` |
-| `STAKE_ACCOUNT_PUBKEY`     | Specific stake account to monitor       | `YourStakeAccount...`              |
-| `EXPORTER_HOSTNAME`        | Stable hostname label for metrics       | `validator-1`                      |
-| `STAKED_IDENTITY_PUBKEY`   | Primary identity pubkey (failover role) | `YourPrimaryIdentity...`           |
-| `UNSTAKED_IDENTITY_PUBKEY` | Backup identity pubkey (failover role)  | `YourBackupIdentity...`            |
+| Variable                          | Description                                              | Example                                          |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------ |
+| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking                  | `11111111111111111111111111111111`               |
+| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                        | `YourStakeAccount...`                            |
+| `EXPORTER_HOSTNAME`               | Stable hostname label for metrics                        | `validator-1`                                    |
+| `STAKED_IDENTITY_PUBKEY`          | Primary identity pubkey (failover role)                  | `YourPrimaryIdentity...`                         |
+| `UNSTAKED_IDENTITY_PUBKEY`        | Backup identity pubkey (failover role)                   | `YourBackupIdentity...`                          |
+| `JPOOL_BOND_WITHDRAWER_AUTHORITY` | Bonds withdrawer authority PDA for JPool bond monitoring | `7cgg6KhPd1G8oaoB48RyPDWu7uZs51jUpDYB3eq4VebH` |
 
 ### Finding Your Validator Keys
 
@@ -151,6 +152,7 @@ The exporter provides the following Prometheus metrics:
 
 - `solana_account_balance` - Validator account balance (in SOL)
 - `solana_double_zero_balance` - Balance of monitored address (in SOL, if configured)
+- `solana_jpool_bond_balance` - JPool validator bond balance (in SOL, if configured)
 
 ### Timing Metrics
 
