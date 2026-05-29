@@ -1,3 +1,5 @@
+"""Utility functions for Solana operations and transaction counting."""
+
 import os
 
 import requests
@@ -10,6 +12,7 @@ STAKE_PROGRAM_ID: PublicKey = PublicKey.from_string("Stake1111111111111111111111
 
 
 async def main():
+    """Demonstrate fetching stake accounts from Solana mainnet."""
     client = AsyncClient("https://api.mainnet-beta.solana.com", Confirmed)
     print("Connecting...")
     await client.is_connected()
@@ -27,6 +30,17 @@ async def main():
 
 
 def get_transaction_count(public_key):
+    """Get the total number of transactions for a given Solana public key.
+
+    Args:
+        public_key: The Solana public key address to query.
+
+    Returns:
+        int: Total number of transactions for the address.
+
+    Raises:
+        Exception: If there's an error fetching transactions or in the RPC response.
+    """
     headers = {"Content-Type": "application/json"}
     offset = 0
     limit = 1000  # Fetch 1000 transactions per request

@@ -72,4 +72,5 @@ jobs:
                   cd "$PROJECT_DIR"
 
                   # Execute docstring checks via poetry (reproducing local workflow)
-                  poetry run pydocstyle solanaexporter/
+                  # Check only the main source files (not venv, tests, or generated files)
+                  poetry run pydocstyle solanaexporter/__init__.py solanaexporter/solanaExporter.py solanaexporter/utils.py

@@ -1,3 +1,5 @@
+"""Solana-specific Prometheus exporter for monitoring validator metrics."""
+
 import os
 import time
 from typing import List, Literal, Optional
@@ -30,7 +32,23 @@ ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
 
 
 class SolanaExporter(RPCExporter):
+    """Prometheus exporter for Solana validator metrics.
+
+    Collects and exposes metrics from Solana RPC endpoints including:
+    - Slot numbers and epoch information
+    - Validator balance and health status
+    - Block production and leader schedule metrics
+    - Stake account information
+    - Vote account delinquency status
+    """
+
     def __init__(self, config_source: str, config_file: Optional[str] = None):
+        """Initialize the Solana exporter.
+
+        Args:
+            config_source: Source of configuration ("fromEnv" or "fromFile").
+            config_file: Path to configuration file (required if config_source is "fromFile").
+        """
         super().__init__(
             config_source=config_source,
             config_file=config_file,
@@ -40,86 +58,102 @@ class SolanaExporter(RPCExporter):
 
         # Prometheus metrics setup
         self.slot_number = Gauge(
-            "solana_slot_number",
-            "Current slot number of the Solana validator",
+            name="solana_slot_number",
+            documentation="Current slot number of the Solana validator",
             registry=self.registry,
         )
         self.absolute_slot_number = Gauge(
-            "solana_absolute_slot_number",
-            "Absolute slot number of the Solana chain",
+            name="solana_absolute_slot_number",
+            documentation="Absolute slot number of the Solana chain",
             registry=self.registry,
         )
         self.slot_lag = Gauge(
-            "solana_slot_lag",
-            "Slot number lag of validator vs the Solana chain",
+            name="solana_slot_lag",
+            documentation="Slot number lag of validator vs the Solana chain",
             registry=self.registry,
         )
         self.sync_status = Gauge(
-            "solana_sync_status",
-            "Node sync status (1 for synced, 0 for not synced)",
+            name="solana_sync_status",
+            documentation="Node sync status (1 for synced, 0 for not synced)",
             registry=self.registry,
         )
         self.slot_time = Gauge(
-            "solana_slot_time",
-            "Time taken to process a slot",
+            name="solana_slot_time",
+            documentation="Time taken to process a slot",
             registry=self.registry,
         )
         self.epoch = Gauge(
-            "solana_epoch",
-            "Current Solana epoch",
+            name="solana_epoch",
+            documentation="Current Solana epoch",
             registry=self.registry,
         )
-        self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.balance = Gauge(
+            name="solana_account_balance",
+            documentation="Validator's account balance",
+            registry=self.registry,
+        )
         self.double_zero_balance = Gauge(
-            "solana_double_zero_balance",
-            "Balance of the double zero fees address",
+            name="solana_double_zero_balance",
+            documentation="Balance of the double zero fees address",
             registry=self.registry,
         )
-        self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
+        self.health_status = Gauge(
+            name="solana_health_status",
+            documentation="Health status of the Solana node",
+            registry=self.registry,
+        )
         self.total_delegated_stake = Gauge(
-            "solana_total_delegated_stake",
-            "Total stake delegated to the validator",
+            name="solana_total_delegated_stake",
+            documentation="Total stake delegated to the validator",
             registry=self.registry,
         )
-        self.delinquent_stake = Gauge("solana_delinquent_stake", "Stake that is delinquent", registry=self.registry)
+        self.delinquent_stake = Gauge(
+            name="solana_delinquent_stake",
+            documentation="Stake that is delinquent",
+            registry=self.registry,
+        )
         self.pending_stake = Gauge(
-            "solana_pending_stake",
-            "Stake that is delegated but not active yet",
+            name="solana_pending_stake",
+            documentation="Stake that is delegated but not active yet",
             registry=self.registry,
         )
         self.missed_slots = Gauge(
-            "solana_missed_slots",
-            "Number of slots missed by the validator",
+            name="solana_missed_slots",
+            documentation="Number of slots missed by the validator",
             registry=self.registry,
         )
-        self.leader_status = Gauge("solana_leader_status", "Leader status (1 or 0)", registry=self.registry)
+        self.leader_status = Gauge(
+            name="solana_leader_status",
+            documentation="Leader status (1 or 0)",
+            registry=self.registry,
+        )
         self.vote_distance = Gauge(
-            "solana_vote_distance",
-            "Vote distance from the highest known slot",
+            name="solana_vote_distance",
+            documentation="Vote distance from the highest known slot",
             registry=self.registry,
         )
         self.block_production_success = Gauge(
-            "solana_block_production_success",
-            "Block production status (1 for success, 0 for failure)",
+            name="solana_block_production_success",
+            documentation="Block production status (1 for success, 0 for failure)",
             registry=self.registry,
         )
         self.credits_earned = Gauge(
-            "solana_credits_earned",
-            "Total vote credits earned by the validator",
+            name="solana_credits_earned",
+            documentation="Total vote credits earned by the validator",
             registry=self.registry,
         )
         self.build_info = Info(
-            "solana_build",
-            "Build information including version and instance label",
+            name="solana_build",
+            documentation="Build information including version and instance label",
             registry=self.registry,
         )
 
         self.programAccountsCallCounter: int = -1
         self.stake_accounts: List[JsonRPCResponse] = []
-        self.last_absolute_slot = None
-        self.last_timestamp = None
+        self.last_absolute_slot: Optional[int] = None
+        self.last_timestamp: Optional[float] = None
 
-    def collect_metrics(self):
+    def collect_metrics(self) -> None:
         """Collect metrics using a batched RPC call."""
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 != 0:
@@ -127,8 +161,8 @@ class SolanaExporter(RPCExporter):
             self.programAccountsCallCounter = 0
 
         rpc_requests: List[JsonRPCRequest] = [
-            JsonRPCRequest("getSlot"),
-            JsonRPCRequest("getBalance", params=[self.config.validator_pubkey]),
+            JsonRPCRequest(method="getSlot"),
+            JsonRPCRequest(method="getBalance", params=[self.config.validator_pubkey]),
         ]
 
         # Track if we're requesting double_zero_balance
@@ -240,7 +274,6 @@ class SolanaExporter(RPCExporter):
 
     def _get_stake_accounts(self) -> List[JsonRPCResponse]:
         """Query stake accounts using the public RPC endpoint."""
-
         program_id = "Stake11111111111111111111111111111111111111"
         filters = [
             {"dataSize": 200},
