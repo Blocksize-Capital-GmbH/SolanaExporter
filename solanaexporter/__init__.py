@@ -1,4 +1,4 @@
-"""Solana Prometheus Exporter package."""
+"""SolanaExporter package.
 
-
-
+This package exposes a Prometheus exporter for Solana validator monitoring.
+"""

@@ -1,6 +1,6 @@
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from solanaexporter.solanaExporter import SolanaExporter
 
@@ -21,53 +21,65 @@ class TestSolanaExporterIntegration(unittest.TestCase):
         }
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_collect_metrics(self):
-        """Integration test for collect_metrics with live RPC calls."""
-        # Update the os.environ dictionary with test environment variables
+    @patch("requests.post")
+    def test_collect_metrics(self, mock_post):
+        """Integration-like test for collect_metrics (mocked RPC)."""
         os.environ.update(self.env)
 
-        # Initialize SolanaExporter with environment configuration
-        exporter = SolanaExporter(config_source="fromEnv")
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
 
-        # Collect metrics
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        resp_batch.json.return_value = [
+            {"result": 12345},  # getSlot
+            {"result": {"value": 100_000_000_000}},  # getBalance
+            {"result": {"value": 50_000_000_000}},  # getBalance (double_zero)
+            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
+            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
+            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
+            {"result": "ok"},  # getHealth
+        ]
+        mock_post.side_effect = [resp_identity, resp_batch]
+
+        exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
 
-        # Validate key metrics after collection
-        self.assertGreater(exporter.slot_number._value.get(), 0, "Slot number should be greater than 0")
-        self.assertGreaterEqual(exporter.balance._value.get(), 0, "Balance should not be negative")
-        self.assertIn(
-            exporter.health_status._value.get(),
-            {0, 1},
-            "Health status should be either 0 (unhealthy) or 1 (healthy)",
-        )
-        self.assertGreaterEqual(exporter.epoch._value.get(), 0, "Epoch should not be negative")
+        self.assertEqual(exporter.slot_number._value.get(), 12345)
+        self.assertEqual(exporter.balance._value.get(), 100)
+        self.assertEqual(exporter.double_zero_balance._value.get(), 50)
+        self.assertIn(exporter.health_status._value.get(), {0, 1})
+        self.assertEqual(exporter.epoch._value.get(), 713)
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_get_stake_accounts(self):
-        """Integration test for _get_stake_accounts with live RPC calls."""
-        # Update the os.environ dictionary with test environment variables
+    @patch("requests.post")
+    def test_get_stake_accounts(self, mock_post):
+        """Integration-like test for _get_stake_accounts (mocked RPC)."""
         os.environ.update(self.env)
 
-        # Initialize SolanaExporter with environment configuration
-        exporter = SolanaExporter(config_source="fromEnv")
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "result": [
+                {
+                    "pubkey": "FpLrg2hkUnFhh9bBpFDtRJTt8VeDbqxq7SubE6kL2HX6",
+                    "account": {"lamports": 1_666_666_000_000},
+                }
+            ]
+        }
 
-        # Fetch stake accounts
+        exporter = SolanaExporter(config_source="fromEnv")
         stake_accounts = exporter._get_stake_accounts()
 
-        # Validate the structure and content of stake accounts
         self.assertIsInstance(stake_accounts, list, "Stake accounts should be a list")
-        if stake_accounts:  # If accounts are returned, validate their format
-            self.assertTrue(all(account.is_valid() for account in stake_accounts))
-            self.assertTrue(all(account.result is not None for account in stake_accounts))
+        self.assertEqual(len(stake_accounts), 1)
+        self.assertEqual(stake_accounts[0].result[0]["account"]["lamports"], 1_666_666_000_000)
 
     @patch.dict("os.environ", {}, clear=True)
-    def test_double_zero_fees_balance_mainnet(self):
-        """Integration test for double_zero_fees_address balance with mainnet address.
-
-        This test first attempts to use the real Solana mainnet API.
-        If rate-limited (429 error), it falls back to mocked responses.
-        """
-        # Use mainnet configuration with the specific address
+    @patch("requests.post")
+    def test_double_zero_fees_balance_mainnet(self, mock_post):
+        """Integration-like test for double_zero_fees_address (mocked RPC)."""
         mainnet_env = {
             "SOLANA_RPC_URL": "https://api.mainnet-beta.solana.com",
             "SOLANA_PUBLIC_RPC_URL": "https://api.mainnet-beta.solana.com",
@@ -79,70 +91,31 @@ class TestSolanaExporterIntegration(unittest.TestCase):
             "VERSION": "v0.712.30006",
             "DOUBLE_ZERO_FEES_ADDRESS": "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5",
         }
-
         os.environ.update(mainnet_env)
 
-        # Initialize SolanaExporter with environment configuration
-        exporter = SolanaExporter(config_source="fromEnv")
+        resp_identity = MagicMock()
+        resp_identity.status_code = 200
+        resp_identity.json.return_value = [{"result": {"identity": mainnet_env["VALIDATOR_PUBKEY"]}}]
 
-        # Try to collect metrics with real API first
+        resp_batch = MagicMock()
+        resp_batch.status_code = 200
+        resp_batch.json.return_value = [
+            {"result": 12345},  # getSlot
+            {"result": {"value": 100_000_000_000}},  # getBalance (validator)
+            {"result": {"value": 4_890_000_000}},  # getBalance (double_zero_fees_address)
+            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
+            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
+            {"result": {mainnet_env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
+            {"result": {"value": {"byIdentity": {mainnet_env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
+            {"result": "ok"},  # getHealth
+        ]
+        mock_post.side_effect = [resp_identity, resp_batch]
+
+        exporter = SolanaExporter(config_source="fromEnv")
         exporter.collect_metrics()
 
-        # Check if we got rate-limited (balance would be 0)
         double_zero_balance = exporter.double_zero_balance._value.get()
-
-        if double_zero_balance == 0:
-            # We got rate-limited, use mocked responses instead
-            print("\n⚠ Rate limited by public RPC, using mocked responses for test")
-
-            with patch("requests.post") as mock_post:
-                # Mock RPC responses based on real Solscan data
-                mock_post.return_value.status_code = 200
-                # Based on Solscan, the address has approximately 4.89 SOL
-                mock_post.return_value.json.return_value = [
-                    {"result": 250_000_000},  # getSlot
-                    {"result": {"value": 100_000_000_000}},  # getBalance (validator)
-                    {"result": {"value": 4_890_000_000}},  # getBalance (double_zero_fees_address) ~4.89 SOL
-                    {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-                    {"result": {"absoluteSlot": 250_000_050, "epoch": 650}},  # getEpochInfo
-                    {"result": {"HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib": [1, 2, 3]}},  # getLeaderSchedule
-                    {
-                        "result": {"value": {"byIdentity": {"BH6aHw9y4Ejes5KdPYA3ezwERCvJd2zMzGLKze45kfy3": [1, 2]}}}
-                    },  # getBlockProduction
-                    {"result": "ok"},  # getHealth
-                ]
-
-                # Re-initialize and collect with mocked responses
-                exporter = SolanaExporter(config_source="fromEnv")
-                exporter.collect_metrics()
-                double_zero_balance = exporter.double_zero_balance._value.get()
-
-                # Validate mocked response
-                self.assertIsNotNone(double_zero_balance, "Double zero balance should be set")
-                self.assertAlmostEqual(
-                    double_zero_balance,
-                    4.89,
-                    places=2,
-                    msg="Double zero balance should be approximately 4.89 SOL (mocked)",
-                )
-        else:
-            # Real API worked, validate the actual balance
-            print("\n✓ Successfully retrieved from real API")
-            self.assertIsNotNone(double_zero_balance, "Double zero balance should be set")
-            self.assertGreater(double_zero_balance, 0, "Double zero balance should be greater than 0")
-
-            # Based on Solscan, the expected balance should be around 4.89 SOL
-            # We'll use a reasonable range to account for any changes
-            self.assertGreater(
-                double_zero_balance, 4.0, f"Double zero balance should be at least 4.0 SOL, got {double_zero_balance}"
-            )
-            self.assertLess(
-                double_zero_balance,
-                10.0,
-                f"Double zero balance should be less than 10.0 SOL (sanity check), got {double_zero_balance}",
-            )
-
-        print(f"✓ Double zero fees address balance: {double_zero_balance} SOL")
+        self.assertEqual(double_zero_balance, 4.89)
 
 
 if __name__ == "__main__":

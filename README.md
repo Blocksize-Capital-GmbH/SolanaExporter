@@ -102,10 +102,13 @@ EXPORTER_ENV=/path/to/.env python solanaexporter/solanaExporter.py
 
 ### Optional Configuration
 
-| Variable                          | Description                                        | Example                                              |
-| --------------------------------- | -------------------------------------------------- | ---------------------------------------------------- |
-| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking            | `11111111111111111111111111111111`                   |
-| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                  | `YourStakeAccount...`                                |
+| Variable                          | Description                                              | Example                                          |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------ |
+| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking                  | `11111111111111111111111111111111`               |
+| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                        | `YourStakeAccount...`                            |
+| `EXPORTER_HOSTNAME`               | Stable hostname label for metrics                        | `validator-1`                                    |
+| `STAKED_IDENTITY_PUBKEY`          | Primary identity pubkey (failover role)                  | `YourPrimaryIdentity...`                         |
+| `UNSTAKED_IDENTITY_PUBKEY`        | Backup identity pubkey (failover role)                   | `YourBackupIdentity...`                          |
 | `JPOOL_BOND_WITHDRAWER_AUTHORITY` | Bonds withdrawer authority PDA for JPool bond monitoring | `7cgg6KhPd1G8oaoB48RyPDWu7uZs51jUpDYB3eq4VebH` |
 
 ### Finding Your Validator Keys
@@ -154,6 +157,19 @@ The exporter provides the following Prometheus metrics:
 ### Timing Metrics
 
 - `solana_slot_time` - Time taken to process a slot (seconds)
+
+### Info / Labels
+
+- `solana_validator_info` - Gauge (value=1) with labels:
+    - `hostname`: stable instance name (use `EXPORTER_HOSTNAME` in containers)
+    - `stake_state`: derived from vote-account stake (`staked|unstaked|unknown`)
+    - `identity_role`: derived from the _active identity key_ (`staked|unstaked|unknown`) when `STAKED_IDENTITY_PUBKEY` / `UNSTAKED_IDENTITY_PUBKEY` are provided
+    - `identity_pubkey`: active identity from `getIdentity`
+    - `vote_pubkey`: configured vote account pubkey
+    - `instance_label`: configured `LABEL`
+
+If you run a failover setup where a node can switch between two identity keys, build alerts/dashboards
+around `identity_role` (not a hostname suffix), so the label automatically follows the active key.
 
 ## Deployment
 

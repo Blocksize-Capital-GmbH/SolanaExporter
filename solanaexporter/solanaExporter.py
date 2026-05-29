@@ -1,6 +1,7 @@
-"""Solana-specific Prometheus exporter for monitoring validator metrics."""
+"""Prometheus exporter for Solana validator metrics."""
 
 import os
+import socket
 import time
 from typing import List, Literal, Optional
 
@@ -33,29 +34,27 @@ ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
 
 
 class SolanaExporter(RPCExporter):
-    """Prometheus exporter for Solana validator metrics.
-
-    Collects and exposes metrics from Solana RPC endpoints including:
-    - Slot numbers and epoch information
-    - Validator balance and health status
-    - Block production and leader schedule metrics
-    - Stake account information
-    - Vote account delinquency status
-    """
+    """Collect and expose Solana validator metrics via Prometheus."""
 
     def __init__(self, config_source: str, config_file: Optional[str] = None):
-        """Initialize the Solana exporter.
-
-        Args:
-            config_source: Source of configuration ("fromEnv" or "fromFile").
-            config_file: Path to configuration file (required if config_source is "fromFile").
-        """
+        """Initialize the exporter and register Prometheus metrics."""
         super().__init__(
             config_source=config_source,
             config_file=config_file,
             config_keys=ALL_CONFIG_KEYS,
             required_keys=REQUIRED_CONFIG_KEYS,
         )
+
+        # Optional identity-role inputs (primary vs backup identity key)
+        self.staked_identity_pubkey: str = (os.getenv("STAKED_IDENTITY_PUBKEY") or "").strip()
+        self.unstaked_identity_pubkey: str = (os.getenv("UNSTAKED_IDENTITY_PUBKEY") or "").strip()
+        self.hostname: str = (
+            (os.getenv("EXPORTER_HOSTNAME") or "").strip()
+            or (os.getenv("HOSTNAME") or "").strip()
+            or socket.gethostname()
+        )
+        self._stake_state: str = "unknown"  # derived from vote-account stake (not identity role)
+        self._last_validator_info_labelvalues: Optional[tuple[str, str, str, str, str, str]] = None
 
         # Prometheus metrics setup
         self.slot_number = Gauge(
@@ -148,6 +147,19 @@ class SolanaExporter(RPCExporter):
             documentation="Build information including version and instance label",
             registry=self.registry,
         )
+        self.validator_info = Gauge(
+            "solana_validator_info",
+            "Validator info metric (value=1) labeled with hostname, identity role, and keys",
+            labelnames=[
+                "hostname",
+                "stake_state",
+                "identity_role",
+                "identity_pubkey",
+                "vote_pubkey",
+                "instance_label",
+            ],
+            registry=self.registry,
+        )
 
         self._has_jpool_bond = (
             hasattr(self.config, "jpool_bond_withdrawer_authority") and self.config.jpool_bond_withdrawer_authority
@@ -164,8 +176,17 @@ class SolanaExporter(RPCExporter):
         self.last_absolute_slot: Optional[int] = None
         self.last_timestamp: Optional[float] = None
 
-    def collect_metrics(self) -> None:
-        """Collect metrics using a batched RPC call."""
+    def collect_metrics(self):
+        """Collect metrics.
+
+        Some metrics are identity-dependent (balance, leader schedule, block production). To make
+        those automatically follow failovers (identity key changes), we probe getIdentity first
+        and use the active identity for the subsequent batch.
+        """
+        identity_from_rpc = self._get_active_identity()
+        identity_for_queries = identity_from_rpc or self.config.validator_pubkey
+
+
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 != 0:
             self.stake_accounts = self._get_stake_accounts()
@@ -174,8 +195,8 @@ class SolanaExporter(RPCExporter):
             self.programAccountsCallCounter = 0
 
         rpc_requests: List[JsonRPCRequest] = [
-            JsonRPCRequest(method="getSlot"),
-            JsonRPCRequest(method="getBalance", params=[self.config.validator_pubkey]),
+            JsonRPCRequest("getSlot"),
+            JsonRPCRequest("getBalance", params=[identity_for_queries]),
         ]
 
         # Track if we're requesting double_zero_balance
@@ -201,6 +222,9 @@ class SolanaExporter(RPCExporter):
             )
             self.health_status.set(0)
             self.sync_status.set(0)
+            # Avoid stale stake/identity labeling during outages.
+            self._stake_state = "unknown"
+            self._update_validator_info(identity_pubkey=identity_from_rpc)
             return
 
         vote_accounts_result = None
@@ -241,11 +265,14 @@ class SolanaExporter(RPCExporter):
                 self._update_epoch_metrics(epoch_info=result)
                 epoch_info_result = result
             elif idx == 4 + idx_offset:  # getLeaderSchedule
-                is_leader: bool = self.config.vote_pubkey in result
+                # getLeaderSchedule keys are identity pubkeys, not vote pubkeys.
+                is_leader: bool = isinstance(result, dict) and identity_for_queries in result
                 self.leader_status.set(1 if is_leader else 0)
                 self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
             elif idx == 5 + idx_offset:  # getBlockProduction
-                self._update_block_production_metrics(block_production_data=result)
+                self._update_block_production_metrics(
+                    block_production_data=result, identity_pubkey=identity_for_queries
+                )
             elif idx == 6 + idx_offset:  # getHealth
                 health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
                 self.health_status.set(value=health)
@@ -258,6 +285,49 @@ class SolanaExporter(RPCExporter):
         self._update_vote_distance(vote_accounts_result, epoch_info_result)
         # update metrics from config file
         self._update_build_info()
+        self._update_validator_info(identity_pubkey=identity_from_rpc)
+
+    def _get_active_identity(self) -> Optional[str]:
+        """Fetch getIdentity.identity from the node RPC."""
+        responses: List[JsonRPCResponse] = JsonRPCRequest.send(
+            rpc_url=self.rpc_url, rpc_requests=JsonRPCRequest("getIdentity"), logger=self.logger
+        )
+        if not responses or not responses[0].is_successful():
+            return None
+        result = responses[0].result
+        if isinstance(result, dict):
+            return result.get("identity")
+        if isinstance(result, str):
+            return result
+        return None
+
+    def _get_identity_role(self, identity_pubkey: Optional[str]) -> str:
+        """Classify active identity key as staked|unstaked|unknown (primary vs backup)."""
+        if not identity_pubkey:
+            return "unknown"
+        if self.staked_identity_pubkey and identity_pubkey == self.staked_identity_pubkey:
+            return "staked"
+        if self.unstaked_identity_pubkey and identity_pubkey == self.unstaked_identity_pubkey:
+            return "unstaked"
+        return "unknown"
+
+    def _update_validator_info(self, identity_pubkey: Optional[str]) -> None:
+        """Expose a stable info series with identity role and hostname."""
+        labelvalues: tuple[str, str, str, str, str, str] = (
+            self.hostname,
+            self._stake_state,
+            self._get_identity_role(identity_pubkey),
+            identity_pubkey or "unknown",
+            self.config.vote_pubkey,
+            str(self.config.label),
+        )
+        if self._last_validator_info_labelvalues and self._last_validator_info_labelvalues != labelvalues:
+            try:
+                self.validator_info.remove(*self._last_validator_info_labelvalues)
+            except KeyError:
+                pass
+        self.validator_info.labels(*labelvalues).set(1)
+        self._last_validator_info_labelvalues = labelvalues
 
     def _update_slot_lag_and_sync_status(self, slot_value, absolute_slot_value):
         """Update slot_lag and sync_status metrics using values from the same probe."""
@@ -328,6 +398,7 @@ class SolanaExporter(RPCExporter):
             self.total_delegated_stake.set(0)
             self.delinquent_stake.set(0)
             self.pending_stake.set(0)
+            self._stake_state = "unknown"
             return
 
         current_accounts = vote_accounts.get("current", [])
@@ -340,8 +411,10 @@ class SolanaExporter(RPCExporter):
                 for account in current_accounts
                 if account.get("votePubkey") == self.config.vote_pubkey
             )
+            self._stake_state = "staked" if total_stake > 0 else "unstaked"
         else:
             total_stake = 0
+            self._stake_state = "unknown"
             self.logger.warning("current_accounts missing or malformed — setting total delegated stake to 0")
 
         self.total_delegated_stake.set(total_stake)
@@ -394,11 +467,9 @@ class SolanaExporter(RPCExporter):
         self.absolute_slot_number.set(self.last_absolute_slot)
         self.last_timestamp = current_timestamp
 
-    def _update_block_production_metrics(self, block_production_data):
+    def _update_block_production_metrics(self, block_production_data, identity_pubkey: str):
         """Update block production metrics."""
-        production_stats = (
-            block_production_data.get("value", {}).get("byIdentity", {}).get(self.config.validator_pubkey, [])
-        )
+        production_stats = block_production_data.get("value", {}).get("byIdentity", {}).get(identity_pubkey, [])
         if production_stats and len(production_stats) == 2:
             leader_slots = production_stats[0]
             blocks_produced = production_stats[1]
