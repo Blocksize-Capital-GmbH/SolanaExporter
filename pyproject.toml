@@ -17,7 +17,7 @@ mypy = "^1.13.0"
 types-requests = "^2.31.0"
 pydocstyle = "^6.3.0"
 pylint = "^3.3.1"
-exporter = { git = "https://github.com/Blocksize-Capital-GmbH/RPCexporter.git", branch = "feature/configurable-keys" }
+exporter = { git = "https://github.com/Blocksize-Capital-GmbH/RPCexporter.git", rev = "c5321da1003cc98d14bc90489214c84b245d252a" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.0.1"
@@ -46,10 +46,15 @@ aggressive = 3
 profile = "black"
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = [
     "solanaexporter/tests"
 ]
 addopts = "--ignore=venv --ignore=.venv --disable-warnings --cov=solanaexporter --cov-fail-under=70"
+
+[tool.bandit.assert_used]
+# Assertions are test expectations, never production security checks.
+skips = ["*/tests/test_*.py"]
 
 [tool.mypy]
 explicit_package_bases = true

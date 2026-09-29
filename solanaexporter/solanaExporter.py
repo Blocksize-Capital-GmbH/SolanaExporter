@@ -3,12 +3,15 @@
 import os
 import socket
 import time
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from exporter.jsonRPCRequest import JsonRPCRequest
 from exporter.jsonRPCResponse import JsonRPCResponse
 from exporter.rpcExporter import RPCExporter
 from prometheus_client import Gauge, Info
+
+from solanaexporter.rpc import send_rpc
+from solanaexporter.sfdp import SfdpMonitor
 
 # Solana-specific configuration keys
 # Required configuration keys - these must be present
@@ -19,13 +22,16 @@ REQUIRED_CONFIG_KEYS = {
     "poll_interval": "POLL_INTERVAL",
     "vote_pubkey": "VOTE_PUBKEY",
     "validator_pubkey": "VALIDATOR_PUBKEY",
-    "version": "VERSION",
     "label": "LABEL",
 }
 
 # Optional configuration keys - these can be omitted
 OPTIONAL_CONFIG_KEYS = {
+    "version": "VERSION",
+    "cluster": "SOLANA_CLUSTER",
+    "client": "SOLANA_CLIENT",
     "double_zero_fees_address": "DOUBLE_ZERO_FEES_ADDRESS",
+    "jpool_bond_withdrawer_authority": "JPOOL_BOND_WITHDRAWER_AUTHORITY",
 }
 
 # All configuration keys combined
@@ -57,77 +63,93 @@ class SolanaExporter(RPCExporter):
 
         # Prometheus metrics setup
         self.slot_number = Gauge(
-            "solana_slot_number",
-            "Current slot number of the Solana validator",
+            name="solana_slot_number",
+            documentation="Current slot number of the Solana validator",
             registry=self.registry,
         )
         self.absolute_slot_number = Gauge(
-            "solana_absolute_slot_number",
-            "Absolute slot number of the Solana chain",
+            name="solana_absolute_slot_number",
+            documentation="Absolute slot number of the Solana chain",
             registry=self.registry,
         )
         self.slot_lag = Gauge(
-            "solana_slot_lag",
-            "Slot number lag of validator vs the Solana chain",
+            name="solana_slot_lag",
+            documentation="Slot number lag of validator vs the Solana chain",
             registry=self.registry,
         )
         self.sync_status = Gauge(
-            "solana_sync_status",
-            "Node sync status (1 for synced, 0 for not synced)",
+            name="solana_sync_status",
+            documentation="Node sync status (1 for synced, 0 for not synced)",
             registry=self.registry,
         )
         self.slot_time = Gauge(
-            "solana_slot_time",
-            "Time taken to process a slot",
+            name="solana_slot_time",
+            documentation="Time taken to process a slot",
             registry=self.registry,
         )
         self.epoch = Gauge(
-            "solana_epoch",
-            "Current Solana epoch",
+            name="solana_epoch",
+            documentation="Current Solana epoch",
             registry=self.registry,
         )
-        self.balance = Gauge("solana_account_balance", "Validator's account balance", registry=self.registry)
+        self.balance = Gauge(
+            name="solana_account_balance",
+            documentation="Validator's account balance",
+            registry=self.registry,
+        )
         self.double_zero_balance = Gauge(
-            "solana_double_zero_balance",
-            "Balance of the double zero fees address",
+            name="solana_double_zero_balance",
+            documentation="Balance of the double zero fees address",
             registry=self.registry,
         )
-        self.health_status = Gauge("solana_health_status", "Health status of the Solana node", registry=self.registry)
+        self.health_status = Gauge(
+            name="solana_health_status",
+            documentation="Health status of the Solana node",
+            registry=self.registry,
+        )
         self.total_delegated_stake = Gauge(
-            "solana_total_delegated_stake",
-            "Total stake delegated to the validator",
+            name="solana_total_delegated_stake",
+            documentation="Total stake delegated to the validator",
             registry=self.registry,
         )
-        self.delinquent_stake = Gauge("solana_delinquent_stake", "Stake that is delinquent", registry=self.registry)
+        self.delinquent_stake = Gauge(
+            name="solana_delinquent_stake",
+            documentation="Stake that is delinquent",
+            registry=self.registry,
+        )
         self.pending_stake = Gauge(
-            "solana_pending_stake",
-            "Stake that is delegated but not active yet",
+            name="solana_pending_stake",
+            documentation="Stake that is delegated but not active yet",
             registry=self.registry,
         )
         self.missed_slots = Gauge(
-            "solana_missed_slots",
-            "Number of slots missed by the validator",
+            name="solana_missed_slots",
+            documentation="Skipped leader slots in the current finalized epoch range (gauge)",
             registry=self.registry,
         )
-        self.leader_status = Gauge("solana_leader_status", "Leader status (1 or 0)", registry=self.registry)
+        self.leader_status = Gauge(
+            name="solana_leader_status",
+            documentation="Leader status (1 or 0)",
+            registry=self.registry,
+        )
         self.vote_distance = Gauge(
-            "solana_vote_distance",
-            "Vote distance from the highest known slot",
+            name="solana_vote_distance",
+            documentation="Vote distance from the highest known slot",
             registry=self.registry,
         )
         self.block_production_success = Gauge(
-            "solana_block_production_success",
-            "Block production status (1 for success, 0 for failure)",
+            name="solana_block_production_success",
+            documentation="Produced blocks divided by scheduled slots; NaN without opportunities",
             registry=self.registry,
         )
         self.credits_earned = Gauge(
-            "solana_credits_earned",
-            "Total vote credits earned by the validator",
+            name="solana_credits_earned",
+            documentation="Total vote credits earned by the validator",
             registry=self.registry,
         )
         self.build_info = Info(
-            "solana_build",
-            "Build information including version and instance label",
+            name="solana_build",
+            documentation="Build information including version and instance label",
             registry=self.registry,
         )
         self.validator_info = Gauge(
@@ -144,134 +166,299 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
 
+        self._has_jpool_bond = (
+            hasattr(self.config, "jpool_bond_withdrawer_authority") and self.config.jpool_bond_withdrawer_authority
+        )
+        if self._has_jpool_bond:
+            self.jpool_bond_balance = Gauge(
+                name="solana_jpool_bond_balance",
+                documentation="JPool validator bond balance (in SOL)",
+                registry=self.registry,
+            )
+
+        for attribute, name, description in [
+            ("leader_slots", "solana_leader_slots", "Scheduled slots in the production range"),
+            ("blocks_produced", "solana_blocks_produced", "Produced blocks in the production range"),
+            ("skip_ratio", "solana_skip_ratio", "Skipped / scheduled slots; NaN without opportunities"),
+            ("production_first_slot", "solana_production_first_slot", "Inclusive production range start"),
+            ("production_last_slot", "solana_production_last_slot", "Inclusive production range end"),
+            ("production_epoch", "solana_production_epoch", "Epoch associated with the production range"),
+            ("production_data_valid", "solana_production_data_valid", "Whether production counts are valid"),
+            (
+                "production_last_success",
+                "solana_production_last_success_timestamp_seconds",
+                "Last valid production read",
+            ),
+            ("collection_success", "solana_collection_success", "Whether essential local collection succeeded"),
+            ("collection_last_success", "solana_collection_last_success_timestamp_seconds", "Last complete local poll"),
+            (
+                "reference_valid",
+                "solana_reference_valid",
+                "Whether the independent reference matches the local cluster",
+            ),
+            ("vote_account_balance", "solana_vote_account_balance", "Vote account balance in SOL, including VAT funds"),
+            (
+                "vote_identity_match",
+                "solana_vote_identity_match",
+                "Whether the configured vote account belongs to the local identity",
+            ),
+        ]:
+            setattr(self, attribute, Gauge(name, description, registry=self.registry))
+        self.sfdp = SfdpMonitor(
+            self.registry,
+            cluster=getattr(self.config, "cluster", None) or "unknown",
+            client=getattr(self.config, "client", None) or "agave",
+        )
+        self._schedule_key = None
+        self._schedule = None
+        self._observed_version = None
+        self._current_epoch = None
+        self._production_range = None
+        self._invalidate_poll()
+
         self.programAccountsCallCounter: int = -1
         self.stake_accounts: List[JsonRPCResponse] = []
-        self.last_absolute_slot = None
-        self.last_timestamp = None
+        self.last_absolute_slot: Optional[int] = None
+        self.last_timestamp: Optional[float] = None
+
+    def _invalidate_poll(self):
+        """Invalidate observations while keeping their last-success timestamps."""
+        for name in (
+            "slot_number",
+            "absolute_slot_number",
+            "slot_lag",
+            "slot_time",
+            "epoch",
+            "balance",
+            "double_zero_balance",
+            "vote_account_balance",
+            "total_delegated_stake",
+            "delinquent_stake",
+            "pending_stake",
+            "leader_status",
+            "vote_distance",
+            "credits_earned",
+            "vote_identity_match",
+        ):
+            getattr(self, name).set(float("nan"))
+        self._invalidate_production()
+        self.health_status.set(0)
+        self.sync_status.set(0)
+        self.reference_valid.set(0)
+        self.collection_success.set(0)
+        self._stake_state = "unknown"
+
+    def _invalidate_production(self):
+        """Do not convert unavailable production data to zero misses."""
+        for name in (
+            "missed_slots",
+            "leader_slots",
+            "blocks_produced",
+            "skip_ratio",
+            "block_production_success",
+            "production_first_slot",
+            "production_last_slot",
+            "production_epoch",
+        ):
+            getattr(self, name).set(float("nan"))
+        self.production_data_valid.set(0)
+
+    def _read(self, requests, public=False):
+        """Return ID-correlated successful results keyed by their local request names."""
+        responses = send_rpc(
+            self.public_rpc_url if public else self.rpc_url,
+            [request for _, request in requests],
+            logger=self.logger,
+        )
+        return {name: response.result for (name, _), response in zip(requests, responses) if response.is_successful()}
+
+    @staticmethod
+    def _valid_epoch(value):
+        """Require an internally consistent epoch snapshot before deriving slot bounds."""
+        return (
+            isinstance(value, dict)
+            and all(type(value.get(key)) is int for key in ("epoch", "absoluteSlot", "slotIndex", "slotsInEpoch"))
+            and value["epoch"] >= 0
+            and value["absoluteSlot"] >= value["slotIndex"]
+            and 0 <= value["slotIndex"] < value["slotsInEpoch"]
+        )
 
     def collect_metrics(self):
-        """Collect metrics.
+        """Monitor the local node, using an independent RPC only as a cluster reference."""
+        self._invalidate_poll()
+        try:
+            self._collect_metrics()
+        except (ValueError, TypeError, KeyError, OverflowError) as error:
+            self.logger.error("Malformed collection data: %s", type(error).__name__)
+            self._invalidate_poll()
+            self._update_validator_info(None)
+            self.sfdp.update(None, None, None)
 
-        Some metrics are identity-dependent (balance, leader schedule, block production). To make
-        those automatically follow failovers (identity key changes), we probe getIdentity first
-        and use the active identity for the subsequent batch.
-        """
-        # Use getIdentity for *labeling* (identity_pubkey/identity_role). If it is unavailable,
-        # keep labels conservative (unknown) and only fall back to VALIDATOR_PUBKEY for RPC queries.
-        identity_from_rpc = self._get_active_identity()
-        identity_for_queries = identity_from_rpc or self.config.validator_pubkey
-
-        self.programAccountsCallCounter += 1
-        if self.programAccountsCallCounter % 5 != 0:
-            self.stake_accounts = self._get_stake_accounts()
-            self.programAccountsCallCounter = 0
-
-        rpc_requests: List[JsonRPCRequest] = [
-            JsonRPCRequest("getSlot"),
-            JsonRPCRequest("getBalance", params=[identity_for_queries]),
-        ]
-
-        # Track if we're requesting double_zero_balance
-        has_double_zero = False
-        if hasattr(self.config, "double_zero_fees_address") and self.config.double_zero_fees_address:
-            rpc_requests.append(JsonRPCRequest("getBalance", params=[self.config.double_zero_fees_address]))
-            has_double_zero = True
-
-        rpc_requests.extend(
+    def _collect_metrics(self):
+        """Collect independent local observations and cluster reference data."""
+        bootstrap = self._read(
             [
-                JsonRPCRequest("getVoteAccounts", params=[{"votePubkey": self.config.vote_pubkey}]),
-                JsonRPCRequest("getEpochInfo"),
-                JsonRPCRequest("getLeaderSchedule"),
-                JsonRPCRequest("getBlockProduction"),
-                JsonRPCRequest("getHealth"),
+                ("identity", JsonRPCRequest("getIdentity")),
+                ("version", JsonRPCRequest("getVersion")),
+                ("genesis", JsonRPCRequest("getGenesisHash")),
+                ("epoch", JsonRPCRequest("getEpochInfo", [{"commitment": "finalized"}])),
+                ("performance", JsonRPCRequest("getRecentPerformanceSamples", [10])),
             ]
         )
-
-        responses: List[JsonRPCResponse] = self._batched_rpc_call(rpc_requests)
-        if not responses or len(responses) != len(rpc_requests):
-            self.logger.error(
-                "RPC call failed or incomplete batch, setting health_status to 0 and other metrics to NaN"
-            )
-            self.health_status.set(0)
-            self.sync_status.set(0)
-            # Avoid stale stake/identity labeling during outages.
-            self._stake_state = "unknown"
-            self._update_validator_info(identity_pubkey=identity_from_rpc)
-            return
-
-        vote_accounts_result = None
-        epoch_info_result = None
-        slot_value = None
-        absolute_slot_value = None
-
-        # Calculate dynamic indices based on whether double_zero_balance is included
-        idx_offset = 1 if has_double_zero else 0
-        health_idx = 7 if has_double_zero else 6
-
-        for idx, response in enumerate(iterable=responses):
-            if response.error:
-                self.logger.error(f"Error in RPC response for method {rpc_requests[idx].method}: {response.error}")
-                if idx == health_idx:
-                    self.health_status.set(0)
-                    self.sync_status.set(0)
-                continue
-            result = response.result
-
-            if idx == 0:  # getSlot
-                slot_value = result
-                self._update_slot_metrics(current_slot=result)
-            elif idx == 1:  # getBalance
-                balance = result.get("value", 0) / 1_000_000_000
-                self.balance.set(balance)
-                self.logger.debug(f"Updated balance: {balance}")
-            elif has_double_zero and idx == 2:  # getBalance (double_zero_fees_address)
-                double_zero_balance = result.get("value", 0) / 1_000_000_000
-                self.double_zero_balance.set(double_zero_balance)
-                self.logger.debug(f"Updated double_zero_balance: {double_zero_balance}")
-            elif idx == 2 + idx_offset:  # getVoteAccounts
-                self._update_stake_metrics(vote_accounts=result)
-                self._update_credits_earned(result)
-                vote_accounts_result = result
-            elif idx == 3 + idx_offset:  # getEpochInfo
-                absolute_slot_value = result.get("absoluteSlot", 0)
-                self._update_epoch_metrics(epoch_info=result)
-                epoch_info_result = result
-            elif idx == 4 + idx_offset:  # getLeaderSchedule
-                # getLeaderSchedule keys are identity pubkeys, not vote pubkeys.
-                is_leader: bool = isinstance(result, dict) and identity_for_queries in result
-                self.leader_status.set(1 if is_leader else 0)
-                self.logger.debug(f"Updated leader status: {1 if is_leader else 0}")
-            elif idx == 5 + idx_offset:  # getBlockProduction
-                self._update_block_production_metrics(
-                    block_production_data=result, identity_pubkey=identity_for_queries
-                )
-            elif idx == 6 + idx_offset:  # getHealth
-                health: Literal[1] | Literal[0] = 1 if result == "ok" else 0
-                self.health_status.set(value=health)
-                self.logger.debug(msg=f"Updated health status: {health}")
-
-        # Calculate slot_lag and sync_status using values from the same probe
-        if slot_value is not None and absolute_slot_value is not None:
-            self._update_slot_lag_and_sync_status(slot_value, absolute_slot_value)
-
-        self._update_vote_distance(vote_accounts_result, epoch_info_result)
-        # update metrics from config file
-        self._update_build_info()
-        self._update_validator_info(identity_pubkey=identity_from_rpc)
-
-    def _get_active_identity(self) -> Optional[str]:
-        """Fetch getIdentity.identity from the node RPC."""
-        responses: List[JsonRPCResponse] = JsonRPCRequest.send(
-            rpc_url=self.rpc_url, rpc_requests=JsonRPCRequest("getIdentity"), logger=self.logger
+        identity_result = bootstrap.get("identity")
+        identity = identity_result.get("identity") if isinstance(identity_result, dict) else None
+        if not isinstance(identity, str) or not identity:
+            identity = None
+        epoch = bootstrap.get("epoch")
+        epoch = epoch if self._valid_epoch(epoch) else None
+        self._current_epoch = epoch["epoch"] if epoch else None
+        self._production_range = (
+            {"firstSlot": epoch["absoluteSlot"] - epoch["slotIndex"], "lastSlot": epoch["absoluteSlot"]}
+            if epoch
+            else None
         )
-        if not responses or not responses[0].is_successful():
-            return None
-        result = responses[0].result
-        if isinstance(result, dict):
-            return result.get("identity")
-        if isinstance(result, str):
-            return result
-        return None
+        if epoch:
+            self._update_epoch_metrics(epoch)
+        version = bootstrap.get("version")
+        self._observed_version = version.get("solana-core") if isinstance(version, dict) else None
+        if not isinstance(self._observed_version, str):
+            self._observed_version = None
+        self._update_build_info()
+        cluster_by_genesis = {
+            "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY": "testnet",
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d": "mainnet-beta",
+        }
+        genesis = bootstrap.get("genesis")
+        actual_cluster = cluster_by_genesis.get(genesis, "unknown") if isinstance(genesis, str) else "unknown"
+        configured_cluster = getattr(self.config, "cluster", None)
+        self.sfdp.cluster = (
+            actual_cluster if not configured_cluster or configured_cluster == actual_cluster else "unknown"
+        )
+        self.sfdp.update(version, epoch, bootstrap.get("performance"))
+
+        commitment = {"commitment": "finalized"}
+        requests = [
+            ("slot", JsonRPCRequest("getSlot", [commitment])),
+            ("vote_balance", JsonRPCRequest("getBalance", [self.config.vote_pubkey, commitment])),
+            (
+                "votes",
+                JsonRPCRequest(
+                    "getVoteAccounts",
+                    [{**commitment, "votePubkey": self.config.vote_pubkey, "keepUnstakedDelinquents": True}],
+                ),
+            ),
+            ("health", JsonRPCRequest("getHealth")),
+        ]
+        if identity:
+            requests.append(("balance", JsonRPCRequest("getBalance", [identity, commitment])))
+        if getattr(self.config, "double_zero_fees_address", None):
+            requests.append(
+                ("double_zero", JsonRPCRequest("getBalance", [self.config.double_zero_fees_address, commitment]))
+            )
+        if identity and epoch:
+            requests.append(
+                (
+                    "production",
+                    JsonRPCRequest(
+                        "getBlockProduction",
+                        [
+                            {
+                                **commitment,
+                                "identity": identity,
+                                "range": self._production_range,
+                            }
+                        ],
+                    ),
+                )
+            )
+            schedule_key = (bootstrap.get("genesis"), epoch["epoch"], identity)
+            if self._schedule_key != schedule_key:
+                self._schedule = None
+            if self._schedule is None:
+                requests.append(
+                    (
+                        "schedule",
+                        JsonRPCRequest(
+                            "getLeaderSchedule",
+                            [
+                                self._production_range["firstSlot"],
+                                {**commitment, "identity": identity},
+                            ],
+                        ),
+                    )
+                )
+                self._schedule_key = schedule_key
+        results = self._read(requests)
+        slot = results.get("slot")
+        if type(slot) is int and slot >= 0:
+            self._update_slot_metrics(slot)
+        local_snapshot_valid = bool(identity and epoch and type(slot) is int and slot >= 0)
+        self.health_status.set(1 if results.get("health") == "ok" and local_snapshot_valid else 0)
+        for key, gauge in (
+            ("balance", self.balance),
+            ("vote_balance", self.vote_account_balance),
+            ("double_zero", self.double_zero_balance),
+        ):
+            result = results.get(key)
+            if isinstance(result, dict) and type(result.get("value")) is int and result["value"] >= 0:
+                gauge.set(result["value"] / 1_000_000_000)
+        if identity and epoch:
+            self._update_block_production_metrics(results.get("production"), identity)
+            if isinstance(results.get("schedule"), dict):
+                slots = results["schedule"].get(identity, [])
+                if isinstance(slots, list) and all(type(i) is int and 0 <= i < epoch["slotsInEpoch"] for i in slots):
+                    self._schedule = set(slots)
+            if self._schedule is not None:
+                self.leader_status.set(int(epoch["slotIndex"] in self._schedule))
+
+        reference = self._read(
+            [
+                ("genesis", JsonRPCRequest("getGenesisHash")),
+                ("slot", JsonRPCRequest("getSlot", [commitment])),
+            ],
+            public=True,
+        )
+        reference_ok = (
+            isinstance(genesis, str)
+            and bool(genesis)
+            and isinstance(reference.get("genesis"), str)
+            and reference["genesis"] == genesis
+            and self.public_rpc_url != self.rpc_url
+        )
+        self.reference_valid.set(int(reference_ok))
+        if reference_ok and type(slot) is int and type(reference.get("slot")) is int:
+            self._update_slot_lag_and_sync_status(slot, reference["slot"])
+
+        if not reference_ok:
+            self.stake_accounts = []
+        self.programAccountsCallCounter += 1
+        if self.programAccountsCallCounter % 5 == 0:
+            self.stake_accounts = self._get_stake_accounts() if reference_ok else []
+            if self._has_jpool_bond:
+                if reference_ok:
+                    self._get_jpool_bond_balance()
+                else:
+                    self.jpool_bond_balance.set(float("nan"))
+        votes = results.get("votes")
+        votes = votes if self._valid_votes(votes) else None
+        self._update_stake_metrics(votes)
+        self._update_vote_distance(votes, epoch)
+        self._update_credits_earned(votes)
+        if isinstance(votes, dict) and identity:
+            for account in votes.get("current", []) + votes.get("delinquent", []):
+                if isinstance(account, dict) and account.get("votePubkey") == self.config.vote_pubkey:
+                    if isinstance(account.get("nodePubkey"), str):
+                        self.vote_identity_match.set(int(account["nodePubkey"] == identity))
+                    break
+        self._update_validator_info(identity)
+        if (
+            local_snapshot_valid
+            and votes is not None
+            and self.production_data_valid._value.get()
+            and self.health_status._value.get() == 1
+        ):
+            self.collection_success.set(1)
+            self.collection_last_success.set(time.time())
 
     def _get_identity_role(self, identity_pubkey: Optional[str]) -> str:
         """Classify active identity key as staked|unstaked|unknown (primary vs backup)."""
@@ -302,25 +489,42 @@ class SolanaExporter(RPCExporter):
         self._last_validator_info_labelvalues = labelvalues
 
     def _update_slot_lag_and_sync_status(self, slot_value, absolute_slot_value):
-        """Update slot_lag and sync_status metrics using values from the same probe."""
-        slot_lag = abs(slot_value - absolute_slot_value)
+        """Compare finalized local and independent reference slots without overriding failed health."""
+        slot_lag = max(0, absolute_slot_value - slot_value)
         self.slot_lag.set(slot_lag)
-        self.sync_status.set(1 if slot_lag <= 64 else 0)
-        self.logger.debug(f"Updated slot lag (same probe): {slot_lag}, sync status: {1 if slot_lag <= 64 else 0}")
+        self.sync_status.set(1 if slot_lag <= 64 and self.health_status._value.get() == 1 else 0)
+        self.logger.debug("Updated reference slot lag: %s", slot_lag)
+
+    @staticmethod
+    def _valid_votes(value):
+        """Validate vote lists before any stake, credit, or identity interpretation."""
+        if not isinstance(value, dict):
+            return False
+        for category in ("current", "delinquent"):
+            accounts = value.get(category)
+            if not isinstance(accounts, list):
+                return False
+            for account in accounts:
+                if (
+                    not isinstance(account, dict)
+                    or not isinstance(account.get("votePubkey"), str)
+                    or type(account.get("activatedStake")) is not int
+                    or account["activatedStake"] < 0
+                ):
+                    return False
+        return True
 
     def _update_vote_distance(self, vote_accounts_result, epoch_info_result):
-        """Update the vote distance metric."""
-        if not vote_accounts_result or not epoch_info_result:
+        """Measure vote distance for current or delinquent accounts; absence is unknown."""
+        self.vote_distance.set(float("nan"))
+        if not isinstance(vote_accounts_result, dict) or not epoch_info_result:
             return
-        highest_vote = 0
-        for account in vote_accounts_result.get("current", []):
-            if account.get("votePubkey") == self.config.vote_pubkey:
-                highest_vote = account.get("lastVote", 0)
-                break
-        highest_known_slot = epoch_info_result.get("absoluteSlot", 0)
-        vote_distance = highest_known_slot - highest_vote if highest_vote else 0
-        self.vote_distance.set(vote_distance)
-        self.logger.debug(f"Updated vote distance: {vote_distance}")
+        for account in vote_accounts_result.get("current", []) + vote_accounts_result.get("delinquent", []):
+            if isinstance(account, dict) and account.get("votePubkey") == self.config.vote_pubkey:
+                last_vote = account.get("lastVote")
+                if type(last_vote) is int and last_vote > 0:
+                    self.vote_distance.set(max(0, epoch_info_result["absoluteSlot"] - last_vote))
+                return
 
     def _update_slot_metrics(self, current_slot):
         """Update slot-related metrics."""
@@ -347,13 +551,13 @@ class SolanaExporter(RPCExporter):
             ],
         )
 
-        responses: List[JsonRPCResponse] = JsonRPCRequest.send(
+        responses: List[JsonRPCResponse] = send_rpc(
             rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger
         )
 
         accounts = []
         for response in responses:
-            if response.is_valid():
+            if response.is_successful() and isinstance(response.result, list):
                 accounts.append(response)
 
         if not accounts:
@@ -363,64 +567,36 @@ class SolanaExporter(RPCExporter):
         return accounts
 
     def _update_stake_metrics(self, vote_accounts) -> None:
-        """Update stake-related metrics with full validation and fallback defaults."""
-        # Safety: vote_accounts must be a valid dict
-        if not isinstance(vote_accounts, dict):
-            self.logger.warning("Invalid vote_accounts structure, resetting stake metrics to 0")
-            self.total_delegated_stake.set(0)
-            self.delinquent_stake.set(0)
-            self.pending_stake.set(0)
-            self._stake_state = "unknown"
+        """Include delinquent stake while preserving unknown results on RPC failure."""
+        self._stake_state = "unknown"
+        for gauge in (self.total_delegated_stake, self.delinquent_stake, self.pending_stake):
+            gauge.set(float("nan"))
+        if not self._valid_votes(vote_accounts):
             return
-
-        current_accounts = vote_accounts.get("current", [])
-        delinquent_accounts = vote_accounts.get("delinquent", [])
-
-        # Validate current_accounts list
-        if isinstance(current_accounts, list):
-            total_stake = sum(
-                account.get("activatedStake", 0) / 1_000_000_000
-                for account in current_accounts
-                if account.get("votePubkey") == self.config.vote_pubkey
-            )
-            self._stake_state = "staked" if total_stake > 0 else "unstaked"
-        else:
-            total_stake = 0
-            self._stake_state = "unknown"
-            self.logger.warning("current_accounts missing or malformed — setting total delegated stake to 0")
-
+        current, delinquent = vote_accounts.get("current"), vote_accounts.get("delinquent")
+        if not isinstance(current, list) or not isinstance(delinquent, list):
+            return
+        accounts = [
+            a for a in current + delinquent if isinstance(a, dict) and a.get("votePubkey") == self.config.vote_pubkey
+        ]
+        if any(type(a.get("activatedStake")) is not int or a["activatedStake"] < 0 for a in accounts):
+            return
+        total_stake = sum(a["activatedStake"] for a in accounts) / 1_000_000_000
         self.total_delegated_stake.set(total_stake)
-        self.logger.debug(f"Updated total delegated stake: {total_stake}")
-
-        # Validate delinquent_accounts list
-        if isinstance(delinquent_accounts, list):
-            total_delinquent_stake = sum(
-                account.get("activatedStake", 0) / 1_000_000_000 for account in delinquent_accounts
-            )
-        else:
-            total_delinquent_stake = 0
-            self.logger.warning("delinquent_accounts missing or malformed — setting delinquent stake to 0")
-
-        self.delinquent_stake.set(total_delinquent_stake)
-        self.logger.debug(f"Updated delinquent stake: {total_delinquent_stake}")
-
-        # Pending stake from stake_accounts (via getProgramAccounts)
-        if self.stake_accounts and self.stake_accounts[0].result is not None:
-            total_delegations = sum(
-                stake_account.get("account", {}).get("lamports", 0) / 1_000_000_000
-                for stake_account in self.stake_accounts[0].result
-            )
-            activating_stake = max(0, total_delegations - total_stake)
-            self.pending_stake.set(activating_stake)
-            self.logger.debug(f"Updated pending stake (activating): {activating_stake}")
-        else:
-            self.pending_stake.set(0)
-            self.logger.debug("Stake accounts missing or empty — setting pending stake to 0")
+        self.delinquent_stake.set(sum(a["activatedStake"] for a in accounts if a in delinquent) / 1_000_000_000)
+        self._stake_state = "staked" if total_stake > 0 else "unstaked"
+        # Legacy estimate includes rent and inactive balances; never use it for admission decisions.
+        if self.stake_accounts:
+            balances = [
+                a.get("account", {}).get("lamports") for a in self.stake_accounts[0].result if isinstance(a, dict)
+            ]
+            if all(type(balance) is int and balance >= 0 for balance in balances):
+                self.pending_stake.set(max(0, sum(balances) / 1_000_000_000 - total_stake))
 
     def _update_epoch_metrics(self, epoch_info):
         """Update metrics related to epoch and slot time."""
         current_absolute_slot = epoch_info.get("absoluteSlot", 0)
-        current_timestamp = time.time()
+        current_timestamp = time.monotonic()
 
         self.epoch.set(epoch_info.get("epoch", 0))
 
@@ -428,48 +604,111 @@ class SolanaExporter(RPCExporter):
             elapsed_time = current_timestamp - self.last_timestamp
             slots_processed = current_absolute_slot - self.last_absolute_slot
 
-            if elapsed_time > 0:
+            if elapsed_time > 0 and slots_processed > 0:
                 slots_per_second = slots_processed / elapsed_time
                 self.slot_time.set(1 / slots_per_second)
                 self.logger.debug(f"Updated slot time: {1 / slots_per_second}, slots_per_second: {slots_per_second}")
             else:
-                self.logger.warning("Elapsed time is zero, cannot calculate slots per second")
+                self.slot_time.set(float("nan"))
 
         self.last_absolute_slot = current_absolute_slot
         self.absolute_slot_number.set(self.last_absolute_slot)
         self.last_timestamp = current_timestamp
 
     def _update_block_production_metrics(self, block_production_data, identity_pubkey: str):
-        """Update block production metrics."""
-        production_stats = block_production_data.get("value", {}).get("byIdentity", {}).get(identity_pubkey, [])
-        if production_stats and len(production_stats) == 2:
-            leader_slots = production_stats[0]
-            blocks_produced = production_stats[1]
-            missed_slots = leader_slots - blocks_produced
-            self.missed_slots.set(missed_slots)
-            self.logger.debug(f"Updated missed slots: {missed_slots}")
-            block_success = 1 if blocks_produced > 0 else 0
-            self.block_production_success.set(block_success)
-            self.logger.debug(f"Updated block production success: {block_success}")
-        else:
-            self.missed_slots.set(0)
-            self.block_production_success.set(0)
-            self.logger.warning("Could not update missed slots: block production stats missing or malformed")
+        """Validate finalized range counts before exposing epoch gauges and their ratios."""
+        self._invalidate_production()
+        value = block_production_data.get("value") if isinstance(block_production_data, dict) else None
+        if not isinstance(value, dict) or not isinstance(value.get("byIdentity"), dict):
+            return
+        bounds = value.get("range")
+        if not isinstance(bounds, dict) or any(type(bounds.get(k)) is not int for k in ("firstSlot", "lastSlot")):
+            return
+        if bounds["firstSlot"] < 0 or bounds["lastSlot"] < bounds["firstSlot"]:
+            return
+        if self._production_range is not None and bounds != self._production_range:
+            return
+        stats = value["byIdentity"].get(identity_pubkey, [0, 0])
+        if not isinstance(stats, (list, tuple)) or len(stats) != 2 or any(type(v) is not int for v in stats):
+            return
+        leaders, produced = stats
+        if not 0 <= produced <= leaders <= bounds["lastSlot"] - bounds["firstSlot"] + 1:
+            return
+        self.leader_slots.set(leaders)
+        self.blocks_produced.set(produced)
+        self.missed_slots.set(leaders - produced)
+        self.skip_ratio.set((leaders - produced) / leaders if leaders else float("nan"))
+        self.block_production_success.set(produced / leaders if leaders else float("nan"))
+        self.production_first_slot.set(bounds["firstSlot"])
+        self.production_last_slot.set(bounds["lastSlot"])
+        self.production_epoch.set(self._current_epoch if self._current_epoch is not None else float("nan"))
+        self.production_data_valid.set(1)
+        self.production_last_success.set(time.time())
 
     def _update_credits_earned(self, vote_accounts_result) -> None:
-        """Update the credits_earned metric."""
-        credits = 0
-        for account in vote_accounts_result.get("current", []):
-            if account.get("votePubkey") == self.config.vote_pubkey:
-                epoch_credits = account.get("epochCredits", [])
-                credits = sum(ec[1] - ec[2] for ec in epoch_credits if len(ec) == 3)
-                break
-        self.credits_earned.set(credits)
-        self.logger.debug(f"Updated credits earned: {credits}")
+        """Expose credits for the current observed epoch, including delinquent accounts."""
+        self.credits_earned.set(float("nan"))
+        if not isinstance(vote_accounts_result, dict) or self._current_epoch is None:
+            return
+        for account in vote_accounts_result.get("current", []) + vote_accounts_result.get("delinquent", []):
+            if isinstance(account, dict) and account.get("votePubkey") == self.config.vote_pubkey:
+                for credit in account.get("epochCredits", []):
+                    if isinstance(credit, (list, tuple)) and len(credit) == 3 and all(type(v) is int for v in credit):
+                        if credit[0] == self._current_epoch and credit[1] >= credit[2] >= 0:
+                            self.credits_earned.set(credit[1] - credit[2])
+                            return
+                self.credits_earned.set(0)
+                return
+
+    def _get_jpool_bond_balance(self) -> None:
+        """Query and update the JPool bond balance from on-chain stake accounts.
+
+        Bond-funded stake accounts are identified by their withdrawal authority
+        (the bonds_withdrawer_authority PDA) and voter (the validator's vote account).
+        Stake account layout offsets: withdrawer at byte 44, voter at byte 124.
+        """
+        program_id = "Stake11111111111111111111111111111111111111"
+        filters = [
+            {"dataSize": 200},
+            {
+                "memcmp": {
+                    "offset": 44,
+                    "bytes": self.config.jpool_bond_withdrawer_authority,
+                }
+            },
+            {
+                "memcmp": {
+                    "offset": 124,
+                    "bytes": self.config.vote_pubkey,
+                }
+            },
+        ]
+        request = JsonRPCRequest(
+            method="getProgramAccounts",
+            params=[
+                program_id,
+                {"filters": filters, "encoding": "base64"},
+            ],
+        )
+
+        responses: List[JsonRPCResponse] = send_rpc(
+            rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger
+        )
+
+        self.jpool_bond_balance.set(float("nan"))
+        if len(responses) != 1 or not responses[0].is_successful() or not isinstance(responses[0].result, list):
+            return
+        total_lamports = 0
+        for account in responses[0].result:
+            value = account.get("account", {}).get("lamports") if isinstance(account, dict) else None
+            if type(value) is not int or value < 0:
+                return
+            total_lamports += value
+        self.jpool_bond_balance.set(total_lamports / 1_000_000_000)
 
     def _update_build_info(self) -> None:
         """Update build information with version and label as string values."""
-        build_info_data = {"version": str(self.config.version), "label": str(self.config.label)}
+        build_info_data = {"version": self._observed_version or "unknown", "label": str(self.config.label)}
         self.build_info.info(build_info_data)
         self.logger.debug(f"Updated build info: {build_info_data}")
 
