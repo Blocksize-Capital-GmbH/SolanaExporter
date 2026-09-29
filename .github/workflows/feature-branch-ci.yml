@@ -24,6 +24,7 @@ permissions:
     packages: write
     contents: read
     actions: read
+    security-events: write
 
 env:
     PYTHON_VERSION: ${{ inputs.python-version }}
@@ -77,11 +78,33 @@ jobs:
         with:
             python-version: ${{ inputs.python-version }}
             artifacts-dir: ${{ inputs.artifacts-dir }}
-            skip-coverage: "true" # Skip coverage for faster feedback
+            skip-coverage: true # Skip coverage for faster feedback
+
+    pre_commit_all:
+        name: Run All Pre-commit Hooks
+        needs: setup
+        uses: ./.github/workflows/pre-commit-all.yml
+        with:
+            python-version: ${{ inputs.python-version }}
+            artifacts-dir: ${{ inputs.artifacts-dir }}
+
+    security_scan:
+        name: Security Scan
+        needs: setup
+        uses: ./.github/workflows/security-scan.yml
 
     docker:
         name: Build and Push Docker Image
-        needs: [format, lint, type_check, docstring_check, tests]
+        needs:
+            [
+                format,
+                lint,
+                type_check,
+                docstring_check,
+                tests,
+                pre_commit_all,
+                security_scan,
+            ]
         uses: ./.github/workflows/docker.yml
         with:
             build-type: "branch"

@@ -49,32 +49,12 @@ jobs:
         with:
             python-version: ${{ inputs.python-version }}
             artifacts-dir: ${{ inputs.artifacts-dir }}
-            skip-coverage: "false" # Full coverage for main
+            skip-coverage: false # Full coverage for main
 
     security_scan:
         name: Security Scan
-        runs-on: ubuntu-22.04
         needs: setup
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v4
-
-            - name: Run Trivy vulnerability scanner
-              id: trivy-scan
-              uses: aquasecurity/trivy-action@0.24.0
-              with:
-                  scan-type: "fs"
-                  scan-ref: "."
-                  format: "sarif"
-                  output: "trivy-results.sarif"
-                  exit-code: "0"
-
-            - name: Upload Trivy scan results to GitHub Security tab
-              uses: github/codeql-action/upload-sarif@v3
-              if: always() && steps.trivy-scan.conclusion != 'skipped'
-              with:
-                  sarif_file: "trivy-results.sarif"
-                  category: "trivy-security-scan"
+        uses: ./.github/workflows/security-scan.yml
 
     docker:
         name: Build and Push Docker Image

@@ -8,8 +8,10 @@ __pycache__
 *.pyc
 solana_exporter.log
 .coverage
+coverage/
 htmlcov/
 coverage.xml
+.env
 poetry.lock
 .idea/
 exporter/__pycache__
