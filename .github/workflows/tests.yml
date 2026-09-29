@@ -17,13 +17,12 @@ name: Run Tests
             skip-coverage:
                 description: "Skip coverage checks"
                 required: false
-                type: string
-                default: "false"
+                type: boolean
+                default: false
 
 env:
     PYTHON_VERSION: ${{ inputs.python-version }}
     ARTIFACTS_DIR: ${{ inputs.artifacts-dir }}
-    SKIP_COVERAGE: ${{ inputs.skip-coverage }}
 
 jobs:
     tests:
@@ -72,7 +71,7 @@ jobs:
                   artifacts-dir: ${{ env.ARTIFACTS_DIR }}
 
             - name: Run test suite with coverage
-              if: ${{ env.SKIP_COVERAGE == 'false' }}
+              if: ${{ !inputs.skip-coverage }}
               run: |
                   set -e
                   echo "=== Running Test Suite with Coverage ==="
@@ -104,7 +103,7 @@ jobs:
                       --disable-warnings --cov-fail-under=70
 
             - name: Run test suite without coverage
-              if: ${{ env.SKIP_COVERAGE == 'true' }}
+              if: ${{ inputs.skip-coverage }}
               run: |
                   set -e
                   echo "=== Running Test Suite Without Coverage ==="
@@ -131,7 +130,7 @@ jobs:
                   poetry run pytest solanaexporter/tests/ -v --disable-warnings
 
             - name: Upload coverage reports
-              if: ${{ env.SKIP_COVERAGE == 'false' }}
+              if: ${{ !inputs.skip-coverage }}
               uses: actions/upload-artifact@v4
               with:
                   name: coverage-report-${{ github.run_id }}
