@@ -1,291 +1,198 @@
-import unittest
-from unittest.mock import MagicMock, patch
+"""Regression tests for local validator collection and optional bond monitoring."""
+
+import math
+
+import pytest
 
 from solanaexporter.solanaExporter import SolanaExporter
 
 
-class TestSolanaExporter(unittest.TestCase):
-    def setUp(self):
-        self.env = {
-            "SOLANA_RPC_URL": "http://localhost:8899",
-            "SOLANA_PUBLIC_RPC_URL": "https://api.testnet.solana.com",
-            "EXPORTER_PORT": "7896",
-            "POLL_INTERVAL": "10",
-            "VOTE_PUBKEY": "6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL",
-            "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
-            "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
-            "LABEL": "Blocksize_Testnet_Main",
-            "VERSION": "0.708.20306",
-            "DOUBLE_ZERO_FEES_ADDRESS": "11111111111111111111111111111111",
-        }
-
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_collect_metrics(self, mock_post, mock_env):
-        """Test metrics collection."""
-        mock_env.update(self.env)
-        # collect_metrics() does getIdentity first, then a batched POST for the rest.
-        resp_identity = MagicMock()
-        resp_identity.status_code = 200
-        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
-
-        resp_batch = MagicMock()
-        resp_batch.status_code = 200
-        resp_batch.json.return_value = [
-            {"result": 12345},  # getSlot
-            {"result": {"value": 100_000_000_000}},  # getBalance
-            {"result": {"value": 50_000_000_000}},  # getBalance (double_zero_fees_address)
-            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule (identity pubkey)
-            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
-            {"result": "ok"},  # getHealth
-        ]
-        mock_post.side_effect = [resp_identity, resp_batch]
-
-        exporter = SolanaExporter(config_source="fromEnv")
-        exporter.collect_metrics()
-
-        self.assertEqual(exporter.slot_number._value.get(), 12345)
-        self.assertEqual(exporter.balance._value.get(), 100)
-        self.assertEqual(exporter.double_zero_balance._value.get(), 50)
-        # Check that build_info contains the expected version and label strings
-        build_info_labels = exporter.build_info._value
-        self.assertEqual(build_info_labels.get("version"), "0.708.20306")
-        self.assertEqual(build_info_labels.get("label"), "Blocksize_Testnet_Main")
-        # Info gauge should exist and be set
-        info_value = exporter.validator_info.labels(
-            exporter.hostname,
-            "unstaked",
-            "unknown",
-            self.env["VALIDATOR_PUBKEY"],
-            self.env["VOTE_PUBKEY"],
-            self.env["LABEL"],
-        )._value.get()
-        self.assertEqual(info_value, 1)
-
-    @patch("requests.post")
-    @patch.dict(
-        "os.environ",
-        {
-            "SOLANA_PUBLIC_RPC_URL": "https://api.testnet.solana.com",
-            "SOLANA_RPC_URL": "http://localhost:8899",
-            "EXPORTER_PORT": "7896",
-            "POLL_INTERVAL": "10",
-            "VOTE_PUBKEY": "6jJK69aeuLbVnM6nUKnmMMwyQG2rNjKNFrfM459kfAdL",
-            "VALIDATOR_PUBKEY": "4EKxPYXmBha7ADnZphFFC13RaKNYLZCiQPKuSV8YWRZc",
-            "STAKE_ACCOUNT_PUBKEY": "J1XibEzMT4pAhu6yBFs2EdsK8nSrVcCao3Ut4eYytzmw",
-            "VERSION": "0.708.20306",
-            "LABEL": "Blocksize_Testnet_Main",
-            "DOUBLE_ZERO_FEES_ADDRESS": "11111111111111111111111111111111",
-        },
-    )
-    def test_get_stake_accounts(self, mock_post):
-        """Test fetching stake accounts."""
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = {
-            "result": [
-                {
-                    "pubkey": "FpLrg2hkUnFhh9bBpFDtRJTt8VeDbqxq7SubE6kL2HX6",
-                    "account": {"lamports": 1_666_666_000_000},
-                }
-            ]
-        }
-
-        exporter = SolanaExporter(config_source="fromEnv")
-        stake_accounts = exporter._get_stake_accounts()
-
-        self.assertEqual(len(stake_accounts), 1)
-        self.assertEqual(stake_accounts[0].result[0]["account"]["lamports"], 1_666_666_000_000)
-
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_update_stake_metrics(self, mock_post, mock_env):
-        """Test updating stake metrics."""
-        mock_env.update(self.env)
-        mock_post.return_value.status_code = 200
-        mock_post.return_value.json.return_value = [
-            {
-                "result": [
-                    {
-                        "pubkey": "FpLrg2hkUnFhh9bBpFDtRJTt8VeDbqxq7SubE6kL2HX6",
-                        "account": {"lamports": 1_666_666_000_000},
-                    }
+def test_collection_uses_local_identity_and_reference(node, rpc_mock):
+    """Follow local failover identity, preserve vote attribution, and use true cluster lag."""
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.missed_slots._value.get() == 5
+    assert exporter.leader_slots._value.get() == 8
+    assert exporter.blocks_produced._value.get() == 3
+    assert exporter.skip_ratio._value.get() == 5 / 8
+    assert exporter.block_production_success._value.get() == 3 / 8
+    assert exporter.slot_lag._value.get() == 5
+    assert exporter.vote_distance._value.get() == 1
+    assert exporter.vote_account_balance._value.get() == 2
+    assert exporter.credits_earned._value.get() == 20
+    assert exporter.build_info._value["version"] == "4.3.0"
+    for call in rpc_mock[1].call_args_list:
+        payload = call.kwargs["json"]
+        for request in payload if isinstance(payload, list) else [payload]:
+            if request["method"] == "getBlockProduction":
+                assert request["params"] == [
+                    {"identity": "ACTIVE", "commitment": "finalized", "range": {"firstSlot": 1000, "lastSlot": 1010}}
                 ]
-            }
-        ]
 
-        exporter = SolanaExporter(config_source="fromEnv")
-        vote_accounts = {
-            "current": [{"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 500_000_000_000}],
-            "delinquent": [{"votePubkey": self.env["VOTE_PUBKEY"], "activatedStake": 200_000_000_000}],
-        }
-        exporter.stake_accounts = exporter._get_stake_accounts()
-        exporter._update_stake_metrics(vote_accounts)
 
-        self.assertEqual(exporter.total_delegated_stake._value.get(), 500)
-        self.assertEqual(exporter.delinquent_stake._value.get(), 200)
-        self.assertAlmostEqual(exporter.pending_stake._value.get(), 1_666.666 - 500)
+def test_production_failure_and_malformed_payload_do_not_create_zero(node, rpc_mock):
+    """Unchanged recovered cumulative misses must never pass through a fabricated zero."""
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.missed_slots._value.get() == 5
+    rpc_mock[0]["fail"].add("getBlockProduction")
+    exporter.collect_metrics()
+    assert math.isnan(exporter.missed_slots._value.get())
+    assert exporter.production_data_valid._value.get() == 0
+    rpc_mock[0]["fail"].clear()
+    rpc_mock[0]["raw_production"] = {}
+    exporter.collect_metrics()
+    assert math.isnan(exporter.missed_slots._value.get())
+    del rpc_mock[0]["raw_production"]
+    exporter.collect_metrics()
+    assert exporter.missed_slots._value.get() == 5
 
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_collect_metrics_without_double_zero(self, mock_post, mock_env):
-        """Test metrics collection without double_zero_fees_address configured."""
-        # Setup environment without DOUBLE_ZERO_FEES_ADDRESS
-        env_without_double_zero = {k: v for k, v in self.env.items() if k != "DOUBLE_ZERO_FEES_ADDRESS"}
-        mock_env.update(env_without_double_zero)
-        resp_identity = MagicMock()
-        resp_identity.status_code = 200
-        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
 
-        resp_batch = MagicMock()
-        resp_batch.status_code = 200
-        # Without double_zero, we have 7 requests in the batch
-        resp_batch.json.return_value = [
-            {"result": 12345},  # getSlot
-            {"result": {"value": 100_000_000_000}},  # getBalance
-            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
-            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
-            {"result": "ok"},  # getHealth
-        ]
-        mock_post.side_effect = [resp_identity, resp_batch]
+def test_stalled_or_backwards_slot_is_safe(node, rpc_mock):
+    """A stalled or reset node continues exporting data without division by zero."""
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    exporter.collect_metrics()
+    assert math.isnan(exporter.slot_time._value.get())
+    assert exporter.missed_slots._value.get() == 5
+    rpc_mock[0]["slot"] -= 1
+    exporter.collect_metrics()
+    assert math.isnan(exporter.slot_time._value.get())
 
-        exporter = SolanaExporter(config_source="fromEnv")
+
+def test_missing_identity_does_not_use_configured_fallback(node, rpc_mock):
+    """An unavailable local identity cannot silently select another configured validator."""
+    rpc_mock[0]["fail"].add("getIdentity")
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert math.isnan(exporter.missed_slots._value.get())
+    assert math.isnan(exporter.balance._value.get())
+
+
+def test_delinquent_vote_account_and_health_error(node, rpc_mock):
+    """Delinquency retains delegated stake and vote distance, while health failure stays unhealthy."""
+    rpc_mock[0]["votes"] = {
+        "current": [],
+        "delinquent": [
+            {"votePubkey": "VOTE", "activatedStake": 7_000_000_000, "lastVote": 900, "epochCredits": [[20, 100, 70]]}
+        ],
+    }
+    rpc_mock[0]["fail"].add("getHealth")
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.total_delegated_stake._value.get() == 7
+    assert exporter.delinquent_stake._value.get() == 7
+    assert exporter.vote_distance._value.get() == 110
+    assert exporter.sync_status._value.get() == 0
+
+
+def test_reference_cluster_mismatch(node, rpc_mock):
+    """A cross-cluster reference cannot produce a seemingly healthy lag value."""
+    rpc_mock[0]["wrong_cluster"] = True
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert math.isnan(exporter.slot_lag._value.get())
+    assert exporter.sync_status._value.get() == 0
+
+
+def test_stake_scan_cadence(node, rpc_mock):
+    """Heavy scans run at startup and every fifth subsequent poll."""
+    exporter = SolanaExporter("fromEnv")
+    for _ in range(11):
         exporter.collect_metrics()
+    assert rpc_mock[0]["scans"] == 3
 
-        self.assertEqual(exporter.slot_number._value.get(), 12345)
-        self.assertEqual(exporter.balance._value.get(), 100)
-        # double_zero_balance should not be set (or remain at initial value)
 
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_double_zero_fees_address_specific_balance(self, mock_post, mock_env):
-        """Test that double_zero_fees_address balance is correctly retrieved and converted.
+def test_jpool_optional_and_failed_scan(node, rpc_mock, monkeypatch):
+    """Keep the bond feature opt-in and never publish a failed scan as an empty bond."""
+    assert not hasattr(SolanaExporter("fromEnv"), "jpool_bond_balance")
+    monkeypatch.setenv("JPOOL_BOND_WITHDRAWER_AUTHORITY", "WITHDRAWER")
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.jpool_bond_balance._value.get() == 0
+    rpc_mock[0]["fail"].add("getProgramAccounts")
+    exporter._get_jpool_bond_balance()
+    assert math.isnan(exporter.jpool_bond_balance._value.get())
+    payload = rpc_mock[1].call_args.kwargs["json"]
+    filters = payload["params"][1]["filters"]
+    assert {"memcmp": {"offset": 44, "bytes": "WITHDRAWER"}} in filters
+    assert {"memcmp": {"offset": 124, "bytes": "VOTE"}} in filters
 
-        This test verifies the fix for the issue where the balance was showing as zero
-        when the correct environment variable DOUBLE_ZERO_FEES_ADDRESS is used.
-        Test uses address 4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5 with expected balance ~4.89 SOL.
-        """
-        env_with_specific_address = self.env.copy()
-        env_with_specific_address["DOUBLE_ZERO_FEES_ADDRESS"] = "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5"
-        mock_env.update(env_with_specific_address)
 
-        # collect_metrics() does getIdentity first, then a batched POST for the rest.
-        resp_identity = MagicMock()
-        resp_identity.status_code = 200
-        resp_identity.json.return_value = [{"result": {"identity": self.env["VALIDATOR_PUBKEY"]}}]
+@pytest.mark.parametrize("stats", [[1, 2], [-1, 0], [True, 0], [1], "bad"])
+def test_invalid_production_counts(node, stats):
+    """Impossible and malformed production counts are unavailable, never negative misses."""
+    exporter = SolanaExporter("fromEnv")
+    exporter._update_block_production_metrics(
+        {"value": {"byIdentity": {"ACTIVE": stats}, "range": {"firstSlot": 1, "lastSlot": 10}}}, "ACTIVE"
+    )
+    assert math.isnan(exporter.missed_slots._value.get())
 
-        # Mock the batch response with 4.89 SOL (in lamports: 4.89 * 1_000_000_000 = 4_890_000_000)
-        resp_batch = MagicMock()
-        resp_batch.status_code = 200
-        resp_batch.json.return_value = [
-            {"result": 12345},  # getSlot
-            {"result": {"value": 100_000_000_000}},  # getBalance (validator)
-            {"result": {"value": 4_890_000_000}},  # getBalance (double_zero_fees_address: 4.89 SOL)
-            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-            {"result": {"absoluteSlot": 12395, "epoch": 713}},  # getEpochInfo
-            {"result": {self.env["VALIDATOR_PUBKEY"]: [1, 2, 3]}},  # getLeaderSchedule
-            {"result": {"value": {"byIdentity": {self.env["VALIDATOR_PUBKEY"]: [1, 2]}}}},  # getBlockProduction
-            {"result": "ok"},  # getHealth
-        ]
-        mock_post.side_effect = [resp_identity, resp_batch]
 
-        exporter = SolanaExporter(config_source="fromEnv")
+def test_empty_valid_production_means_no_opportunities(node):
+    """A validated empty identity map means zero opportunities and an undefined ratio."""
+    exporter = SolanaExporter("fromEnv")
+    exporter._update_block_production_metrics(
+        {"value": {"byIdentity": {}, "range": {"firstSlot": 1, "lastSlot": 10}}}, "ACTIVE"
+    )
+    assert exporter.missed_slots._value.get() == 0
+    assert exporter.leader_slots._value.get() == 0
+    assert math.isnan(exporter.skip_ratio._value.get())
+
+
+def test_schedule_retry_after_rpc_failure(node, rpc_mock):
+    """An unavailable leader schedule is retried within the same epoch."""
+    rpc_mock[0]["fail"].add("getLeaderSchedule")
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert math.isnan(exporter.leader_status._value.get())
+    rpc_mock[0]["fail"].clear()
+    exporter.collect_metrics()
+    assert exporter.leader_status._value.get() == 1
+
+
+@pytest.mark.parametrize("method", ["getIdentity", "getEpochInfo", "getSlot"])
+def test_health_needs_essential_local_snapshot(node, rpc_mock, method):
+    """A successful health endpoint cannot hide an unavailable essential snapshot."""
+    rpc_mock[0]["fail"].add(method)
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.health_status._value.get() == 0
+    assert exporter.sync_status._value.get() == 0
+
+
+@pytest.mark.parametrize("member", [None, {}, {"votePubkey": "VOTE", "activatedStake": "bad"}])
+def test_invalid_vote_members_are_unknown(node, rpc_mock, member):
+    """Malformed vote data cannot turn a staked validator into an unstaked label."""
+    rpc_mock[0]["votes"] = {"current": [member], "delinquent": []}
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert math.isnan(exporter.total_delegated_stake._value.get())
+    assert exporter._stake_state == "unknown"
+    assert exporter.missed_slots._value.get() == 5
+    assert exporter.collection_success._value.get() == 0
+
+
+@pytest.mark.parametrize("genesis", [True, 42, {}, [], ""])
+def test_malformed_genesis_never_validates_reference(node, rpc_mock, genesis):
+    """Matching malformed genesis replies must not establish cluster identity."""
+    from unittest.mock import patch
+
+    import solanaexporter.solanaExporter as collector
+
+    original = collector.send_rpc
+
+    def malformed_genesis(rpc_url, rpc_requests, logger=None):
+        responses = original(rpc_url, rpc_requests, logger=logger)
+        requests = rpc_requests if isinstance(rpc_requests, list) else [rpc_requests]
+        for request, response in zip(requests, responses):
+            if request.method == "getGenesisHash":
+                response.result = genesis
+        return responses
+
+    with patch.object(collector, "send_rpc", side_effect=malformed_genesis):
+        exporter = SolanaExporter("fromEnv")
         exporter.collect_metrics()
-
-        # Verify the balance is correctly set to 4.89 SOL (not 0)
-        self.assertEqual(exporter.double_zero_balance._value.get(), 4.89)
-        self.assertGreater(exporter.double_zero_balance._value.get(), 0)
-        # Verify the address was correctly read from config
-        self.assertEqual(exporter.config.double_zero_fees_address, "4wm9PFxxRox3vgntwVdwbqvkRDjyjaqEdSiohosEJSj5")
-
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_identity_role_label(self, mock_post, mock_env):
-        """identity_role should reflect getIdentity when STAKED/UNSTAKED keys are configured."""
-        env = dict(self.env)
-        env["STAKED_IDENTITY_PUBKEY"] = "IDENTITY_STAKED"
-        env["UNSTAKED_IDENTITY_PUBKEY"] = "IDENTITY_UNSTAKED"
-        env["VALIDATOR_PUBKEY"] = "IDENTITY_STAKED"
-        mock_env.update(env)
-
-        resp_identity = MagicMock()
-        resp_identity.status_code = 200
-        resp_identity.json.return_value = [{"result": {"identity": "IDENTITY_UNSTAKED"}}]
-
-        resp_batch = MagicMock()
-        resp_batch.status_code = 200
-        # Minimal batch response (double_zero is configured in env, so include it)
-        resp_batch.json.return_value = [
-            {"result": 1},  # getSlot
-            {"result": {"value": 0}},  # getBalance (active identity)
-            {"result": {"value": 0}},  # getBalance (double_zero_fees_address)
-            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-            {"result": {"absoluteSlot": 1, "epoch": 1}},  # getEpochInfo
-            {"result": {}},  # getLeaderSchedule
-            {"result": {"value": {"byIdentity": {}}}},  # getBlockProduction
-            {"result": "ok"},  # getHealth
-        ]
-        mock_post.side_effect = [resp_identity, resp_batch]
-
-        exporter = SolanaExporter(config_source="fromEnv")
-        exporter.collect_metrics()
-
-        info_value = exporter.validator_info.labels(
-            exporter.hostname,
-            "unstaked",  # from vote accounts (empty)
-            "unstaked",
-            "IDENTITY_UNSTAKED",
-            env["VOTE_PUBKEY"],
-            env["LABEL"],
-        )._value.get()
-        self.assertEqual(info_value, 1)
-
-    @patch("os.environ", new_callable=lambda: {})
-    @patch("requests.post")
-    def test_identity_role_unknown_when_getidentity_fails(self, mock_post, mock_env):
-        """identity_role should be unknown when getIdentity cannot be retrieved."""
-        env = dict(self.env)
-        env["STAKED_IDENTITY_PUBKEY"] = "IDENTITY_STAKED"
-        env["UNSTAKED_IDENTITY_PUBKEY"] = "IDENTITY_UNSTAKED"
-        # VALIDATOR_PUBKEY may be configured as the staked identity, but labels must not lie.
-        env["VALIDATOR_PUBKEY"] = "IDENTITY_STAKED"
-        mock_env.update(env)
-
-        # Simulate getIdentity failure (HTTP ok but RPC error payload is treated as unsuccessful)
-        resp_identity = MagicMock()
-        resp_identity.status_code = 200
-        resp_identity.json.return_value = [{"error": {"code": -32000, "message": "node is behind"}}]
-
-        resp_batch = MagicMock()
-        resp_batch.status_code = 200
-        resp_batch.json.return_value = [
-            {"result": 1},  # getSlot
-            {"result": {"value": 0}},  # getBalance (falls back to VALIDATOR_PUBKEY for query)
-            {"result": {"value": 0}},  # getBalance (double_zero_fees_address)
-            {"result": {"current": [], "delinquent": []}},  # getVoteAccounts
-            {"result": {"absoluteSlot": 1, "epoch": 1}},  # getEpochInfo
-            {"result": {}},  # getLeaderSchedule
-            {"result": {"value": {"byIdentity": {}}}},  # getBlockProduction
-            {"result": "ok"},  # getHealth
-        ]
-        mock_post.side_effect = [resp_identity, resp_batch]
-
-        exporter = SolanaExporter(config_source="fromEnv")
-        exporter.collect_metrics()
-
-        info_value = exporter.validator_info.labels(
-            exporter.hostname,
-            "unstaked",  # from empty vote accounts => 0 stake => unstaked
-            "unknown",
-            "unknown",
-            env["VOTE_PUBKEY"],
-            env["LABEL"],
-        )._value.get()
-        self.assertEqual(info_value, 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    assert exporter.reference_valid._value.get() == 0
+    assert math.isnan(exporter.slot_lag._value.get())
+    assert exporter.sync_status._value.get() == 0

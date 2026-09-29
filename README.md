@@ -48,7 +48,7 @@ POLL_INTERVAL=30
 VOTE_PUBKEY=YourVotePubkeyHere
 VALIDATOR_PUBKEY=YourValidatorPubkeyHere
 STAKE_ACCOUNT_PUBKEY=YourStakeAccountPubkeyHere
-VERSION=1.18.0
+SOLANA_CLIENT=agave
 LABEL=mainnet-validator
 ```
 
@@ -97,19 +97,20 @@ EXPORTER_ENV=/path/to/.env python solanaexporter/solanaExporter.py
 | `POLL_INTERVAL`         | Polling interval in seconds   | `30`                                  |
 | `VOTE_PUBKEY`           | Vote account public key       | `YourVotePubkey...`                   |
 | `VALIDATOR_PUBKEY`      | Validator identity public key | `YourValidatorPubkey...`              |
-| `VERSION`               | Solana client version         | `1.18.0`                              |
 | `LABEL`                 | Instance label for metrics    | `mainnet-validator`                   |
 
 ### Optional Configuration
 
-| Variable                          | Description                                              | Example                                          |
-| --------------------------------- | -------------------------------------------------------- | ------------------------------------------------ |
-| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking                  | `11111111111111111111111111111111`               |
-| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                        | `YourStakeAccount...`                            |
-| `EXPORTER_HOSTNAME`               | Stable hostname label for metrics                        | `validator-1`                                    |
-| `STAKED_IDENTITY_PUBKEY`          | Primary identity pubkey (failover role)                  | `YourPrimaryIdentity...`                         |
-| `UNSTAKED_IDENTITY_PUBKEY`        | Backup identity pubkey (failover role)                   | `YourBackupIdentity...`                          |
+| Variable                          | Description                                              | Example                                        |
+| --------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
+| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking                  | `11111111111111111111111111111111`             |
+| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                        | `YourStakeAccount...`                          |
+| `EXPORTER_HOSTNAME`               | Stable hostname label for metrics                        | `validator-1`                                  |
+| `STAKED_IDENTITY_PUBKEY`          | Primary identity pubkey (failover role)                  | `YourPrimaryIdentity...`                       |
+| `UNSTAKED_IDENTITY_PUBKEY`        | Backup identity pubkey (failover role)                   | `YourBackupIdentity...`                        |
 | `JPOOL_BOND_WITHDRAWER_AUTHORITY` | Bonds withdrawer authority PDA for JPool bond monitoring | `7cgg6KhPd1G8oaoB48RyPDWu7uZs51jUpDYB3eq4VebH` |
+
+`SOLANA_CLIENT` is optional and defaults to `agave`; use `jito`, `frankendancer`, or `firedancer` for those deployments. Optional `SOLANA_CLUSTER` asserts the cluster detected from the local genesis hash.
 
 ### Finding Your Validator Keys
 
@@ -143,10 +144,10 @@ The exporter provides the following Prometheus metrics:
 ### Performance Metrics
 
 - `solana_missed_slots` - Number of slots missed by the validator
-- `solana_leader_status` - Current leader status (1 = leader, 0 = not leader)
+- `solana_leader_status` - Leader status at the sampled finalized slot (1 = leader, 0 = not leader)
 - `solana_vote_distance` - Vote distance from the highest known slot
-- `solana_block_production_success` - Block production success rate
-- `solana_credits_earned` - Vote credits earned
+- `solana_block_production_success` - Produced blocks / scheduled slots (0–1; NaN without opportunities)
+- `solana_credits_earned` - Vote credits earned in the current observed epoch
 
 ### Account Metrics
 
@@ -250,13 +251,13 @@ groups:
                 description: "Validator health check failing"
 
           - alert: SolanaHighMissedSlots
-            expr: rate(solana_missed_slots[5m]) > 0.1
+            expr: solana_skip_ratio > 0.10 and solana_leader_slots >= 20 and solana_production_data_valid == 1
             for: 5m
             labels:
                 severity: warning
             annotations:
                 summary: "High rate of missed slots"
-                description: "Validator is missing {{ $value }} slots per second"
+                description: "Validator has skipped {{ $value | humanizePercentage }} of its scheduled slots this epoch"
 
           - alert: SolanaLowAccountBalance
             expr: solana_account_balance < 1.0
@@ -456,3 +457,99 @@ Validator Identity: [`HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib`](https://sol
 [![Stake on Kiwi](assets/stake-kiwi-badge.svg)](https://staking.kiwi/app/HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib)
 
 </div>
+
+## Local-node production and upgrade monitoring
+
+`SOLANA_RPC_URL` must address the local validator. Identity-dependent metrics follow
+its live `getIdentity`, including failovers. If that call fails, those observations
+are unavailable; the configured identity is not substituted. `SOLANA_PUBLIC_RPC_URL`
+remains an independent cluster reference and a source for stake and JPOOL account
+scans. Both RPCs must report the same genesis hash. No remote-validator observation
+mode is provided.
+
+Production is collected at `finalized` commitment for an explicit epoch-start to
+finalized-slot range. `solana_missed_slots`, `solana_leader_slots`, and
+`solana_blocks_produced` are epoch gauges. **Do not use `rate()` or `increase()` on
+these gauges.** Use `solana_skip_ratio` with a minimum scheduled-slot count, and
+compare like-for-like epochs and ranges. Faster slots or more stake can increase
+counts without worsening the fraction of opportunities missed.
+
+The exporter also publishes:
+
+| Metric                                                                          | Meaning                                                          |
+| ------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `solana_production_epoch`                                                       | Epoch belonging to the production result                         |
+| `solana_production_first_slot`, `solana_production_last_slot`                   | Inclusive range actually validated                               |
+| `solana_production_data_valid`                                                  | 1 for a validated result, otherwise 0                            |
+| `solana_production_last_success_timestamp_seconds`                              | Last successful production collection                            |
+| `solana_collection_success`, `solana_collection_last_success_timestamp_seconds` | Essential local collection status and last success               |
+| `solana_reference_valid`                                                        | Independent reference RPC matches the local cluster              |
+| `solana_vote_identity_match`                                                    | Configured vote account belongs to the active local identity     |
+| `solana_vote_account_balance`                                                   | Vote account SOL balance, including funds used for Alpenglow VAT |
+
+Failures and malformed data produce `NaN`, not a fabricated zero or stale count.
+A valid empty production map means zero scheduled opportunities and zero misses;
+its success/skip ratios are `NaN`. Slot timing uses a monotonic clock and tolerates
+stalls or backwards slot movement. Stake and optional JPOOL scans run on the first
+poll and then every fifth poll. JPOOL remains opt-in through
+`JPOOL_BOND_WITHDRAWER_AUTHORITY`; a failed scan is unavailable, while a successful
+empty scan is zero. Its balance is the sum of matching stake-account lamports.
+`solana_pending_stake` remains a legacy balance-minus-active-stake estimate, including
+rent and inactive balances; it is not an admission or precise activation metric.
+Vote-account balance alone does not prove Alpenglow admission or VAT coverage.
+
+### SFDP version deadlines
+
+`solana_node_version_info{version,feature_set,client,cluster}` reports the local
+`getVersion` response. The legacy `VERSION` configuration is optional and no longer
+overrides the observed version. The cluster is identified from `getGenesisHash`;
+optional `SOLANA_CLUSTER=testnet` or `mainnet-beta` must agree with it.
+Set `SOLANA_CLIENT=jito` for Jito deployments (Agave policy bounds),
+`frankendancer` for the API's `firedancer_*` bounds, or `firedancer` for its
+`firedancer_full_*` bounds. The default is `agave`. Client identity is not inferred
+from an ambiguous version string. The reported feature-set is build information,
+not proof of activated runtime features.
+
+The exporter fetches the [SFDP required-version API](https://solana.org/delegation-api-docs)
+and publishes `solana_sfdp_upgrade_due_seconds`: estimated seconds until the earliest
+listed epoch whose minimum version is **greater than the local version**.
+
+- Positive: the outstanding upgrade becomes due in the future.
+- Zero: the estimated epoch boundary is now.
+- Negative: that outstanding requirement is already overdue.
+- `+Inf`: valid policy contains no minimum greater than the running version.
+- `NaN`: the policy, local version, or required timing inputs are unavailable.
+
+The estimate uses `(due_epoch - current_epoch) * slotsInEpoch - slotIndex`,
+multiplied by the weighted seconds per slot from recent local performance samples.
+It is an estimate, especially across historical slot-time changes; the API supplies
+epoch deadlines, not wall-clock timestamps. It is intended for regular, fixed-length
+Solana epochs.
+
+Your requested alert window is:
+
+```yaml
+- alert: SolanaSFDPUpgradeDueSoon
+  expr: solana_sfdp_upgrade_due_seconds > 0 and solana_sfdp_upgrade_due_seconds < 1000000
+  for: 5m
+  labels:
+      severity: warning
+  annotations:
+      summary: "An SFDP-required validator upgrade is approaching"
+      description: "Estimated time remaining: {{ $value | humanizeDuration }}"
+```
+
+`solana_sfdp_upgrade_due_epoch` identifies the selected deadline.
+`solana_sfdp_upgrade_required` indicates whether any listed higher minimum exists.
+`solana_sfdp_version_compliant` evaluates both minimum and maximum bounds only when
+the current epoch is explicitly covered. `solana_sfdp_policy_current_epoch_covered`,
+`solana_sfdp_policy_max_epoch`, `solana_sfdp_policy_fetch_success`, and
+`solana_sfdp_policy_last_success_timestamp_seconds` expose policy coverage and freshness.
+A previously published overdue requirement can still have a negative countdown when
+the current epoch is not covered; this does not establish current-epoch compliance.
+An API gap must not be interpreted as a successful SFDP eligibility check.
+
+Policy refreshes are cached for 15 minutes. Failed refreshes retain previously
+validated policy for at most one hour, with the failure and last-success timestamp
+visible. This monitoring does not replace Foundation metric submission or establish
+full delegation-program eligibility.
