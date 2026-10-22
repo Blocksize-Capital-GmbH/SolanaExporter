@@ -12,6 +12,7 @@ from prometheus_client import Gauge, Info
 
 from solanaexporter.rpc import send_rpc
 from solanaexporter.sfdp import SfdpMonitor
+from solanaexporter.voteEstimate import VotesLast300Slots
 
 # Solana-specific configuration keys
 # Required configuration keys - these must be present
@@ -147,6 +148,11 @@ class SolanaExporter(RPCExporter):
             documentation="Total vote credits earned by the validator",
             registry=self.registry,
         )
+        self.votes_last_300_slots = Gauge(
+            name="solana_votes_last_300_slots",
+            documentation="Estimated non-leader rewarded votes in the last 300 processing slots; NaN when unavailable",
+            registry=self.registry,
+        )
         self.build_info = Info(
             name="solana_build",
             documentation="Build information including version and instance label",
@@ -214,6 +220,7 @@ class SolanaExporter(RPCExporter):
         self._observed_version = None
         self._current_epoch = None
         self._production_range = None
+        self._vote_estimate = VotesLast300Slots(self.config.vote_pubkey, self.rpc_url, self.public_rpc_url, self.logger)
         self._invalidate_poll()
 
         self.programAccountsCallCounter: int = -1
@@ -238,6 +245,7 @@ class SolanaExporter(RPCExporter):
             "leader_status",
             "vote_distance",
             "credits_earned",
+            "votes_last_300_slots",
             "vote_identity_match",
         ):
             getattr(self, name).set(float("nan"))
@@ -291,6 +299,7 @@ class SolanaExporter(RPCExporter):
         except (ValueError, TypeError, KeyError, OverflowError) as error:
             self.logger.error("Malformed collection data: %s", type(error).__name__)
             self._invalidate_poll()
+            self._vote_estimate.reset()
             self._update_validator_info(None)
             self.sfdp.update(None, None, None)
 
@@ -444,6 +453,16 @@ class SolanaExporter(RPCExporter):
         self._update_stake_metrics(votes)
         self._update_vote_distance(votes, epoch)
         self._update_credits_earned(votes)
+        schedule = {identity: sorted(self._schedule)} if identity and self._schedule is not None else None
+        self.votes_last_300_slots.set(
+            self._vote_estimate.observe(
+                votes,
+                epoch,
+                schedule,
+                identity if local_snapshot_valid and reference_ok else None,
+                local_genesis=genesis,
+            )
+        )
         if isinstance(votes, dict) and identity:
             for account in votes.get("current", []) + votes.get("delinquent", []):
                 if isinstance(account, dict) and account.get("votePubkey") == self.config.vote_pubkey:
