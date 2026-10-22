@@ -148,6 +148,7 @@ The exporter provides the following Prometheus metrics:
 - `solana_vote_distance` - Vote distance from the highest known slot
 - `solana_block_production_success` - Produced blocks / scheduled slots (0–1; NaN without opportunities)
 - `solana_credits_earned` - Vote credits earned in the current observed epoch
+- `solana_votes_last_300_slots` - Integer credit-based estimate of non-leader rewarded vote inclusions over the last 300 processing slots (0–300, or `NaN` when unavailable)
 
 ### Account Metrics
 
@@ -268,6 +269,82 @@ groups:
                 summary: "Low validator account balance"
                 description: "Balance is {{ $value }} SOL (< 1 SOL)"
 ```
+
+### Estimated Votes in the Last 300 Slots
+
+`solana_votes_last_300_slots` estimates rewarded voting participation outside the validator's scheduled
+leader slots, including notarization or skip votes. It is an integer-valued gauge, not a count of sent
+messages or an exact missed-vote measurement. A window is 300 chain slots, not a fixed minute;
+reward processing also trails vote creation.
+
+The estimate reuses the existing local `getVoteAccounts`, `getEpochInfo`, and `getLeaderSchedule`
+responses. It stores a bounded credit history and uses a simple credit-threshold counter: every
+expected voter-reward quantum adds one estimated vote, capped at the number of non-leader slots
+that elapsed. A sub-threshold credit remainder carries forward between clean polls:
+
+```text
+slot_reward = floor(epoch_inflation_budget * validator_stake / (slots_in_epoch * admitted_stake))
+voter_reward = floor(slot_reward / 2)
+whole_votes, remainder = divmod(interval_credit_increase + remainder, voter_reward)
+counted_votes = min(non_leader_slots_elapsed, whole_votes)
+```
+
+Existing polls usually span several slots. If the 300-slot boundary cuts through a poll interval,
+the counter's estimated votes are spread uniformly across that interval's non-leader slots.
+No per-slot polling or reconstruction of individual vote events is performed.
+
+Alpenglow credits are reward lamports and include leader bonuses; credits can jump during leadership.
+The estimator counts scheduled leader slots as **zero** while keeping the rolling window. A healthy
+window containing a four-slot leader run therefore reports about **296**, returning to about 300 once
+those four slots leave the window. The raw credit metric is unchanged.
+
+A poll can span both ordinary and leader slots, so its credit increase cannot separate voting rewards
+from the bonus. The counter caps that interval at its non-leader slot count and discards both excess
+credits and the remainder. An eight-slot margin classifies potentially mixed intervals; only actual
+scheduled leader slots are counted as zero. A large bonus can therefore mask missed ordinary-slot
+votes within the same poll interval, but it cannot credit a later poll. Use a short poll interval and
+a sustained alert threshold. The metric follows the configured vote account only while its node
+identity matches the active local identity.
+
+Reference data is loaded only after a complete window exists. A single public RPC batch reads
+`getGenesisHash`, the small Alpenglow reward-budget account, and an admitted-stake census via
+`getVoteAccounts`. The reference is cached for the epoch and reloaded if the target identity or stake
+changes. The existing local bootstrap supplies the genesis hash for the same-cluster check; the
+estimator adds no host-local RPC requests. Requests have a three-second timeout; failed loads retry at most once
+every five minutes for the same epoch/identity/stake. No per-slot RPC requests or block scans are added.
+`SOLANA_PUBLIC_RPC_URL` must point to an external RPC; a matching local hostname or loopback endpoint
+is rejected for reference loading.
+
+The public census approximates the protocol's frozen epoch stake weights. Sampling, estimated vote
+placement within poll intervals, and delayed reward inclusion introduce additional error. Estimates slightly above 300
+are capped at the number of non-leader slots in the window; values above 315 are treated as unavailable rather than hidden as full participation.
+Do not interpret `300 - solana_votes_last_300_slots` as an exact number of unsent or failed votes.
+
+The value is `NaN` during startup, the first eight slots of an epoch, epoch/identity/stake changes,
+missing or malformed inputs, and unavailable or mismatched public
+reference data. A full 300-slot history must accumulate again after a local data interruption, stalled
+or backward slots, credit regression, or a polling gap of 300 slots or more. The metric does not reuse
+an older numeric value on failure.
+
+Set `POLL_INTERVAL` short enough that consecutive polls are less than 300 slots apart; **10 seconds is
+recommended** for this estimate. The exporter does not automatically increase its polling frequency.
+Apply alerts over sustained windows and treat `NaN` as unavailable data. Existing credit and vote-distance
+metrics retain their current behavior.
+
+To alert when the estimated deficit exceeds 50 slots:
+
+```yaml
+- alert: SolanaLowVotingParticipation
+  expr: solana_votes_last_300_slots < 250
+  for: 30s
+  labels:
+      severity: warning
+  annotations:
+      summary: "Estimated voting participation is below 250 of the last 300 slots"
+```
+
+This deficit includes the deliberately zeroed scheduled leader slots. A single four-slot leader run
+does not trigger this alert by itself. Missing data remains `NaN` and needs a separate availability alert.
 
 ### Grafana Dashboard
 
