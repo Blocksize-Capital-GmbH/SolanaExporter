@@ -9,7 +9,7 @@ from solanaexporter.solanaExporter import SolanaExporter
 
 LEGACY = "LEGACY_BOND"
 JSOL = "JSOL_VAULT"
-TOKEN_OWNER = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_OWNER = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"  # nosec B105
 JSOL_MINT = "7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn"
 
 

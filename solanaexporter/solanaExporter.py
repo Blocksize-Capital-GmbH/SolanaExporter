@@ -39,7 +39,7 @@ OPTIONAL_CONFIG_KEYS = {
 # All configuration keys combined
 ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
 JSOL_MINT = "7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn"
-TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"  # nosec B105
 
 
 class SolanaExporter(RPCExporter):
