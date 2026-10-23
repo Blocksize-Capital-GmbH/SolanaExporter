@@ -101,14 +101,15 @@ EXPORTER_ENV=/path/to/.env python solanaexporter/solanaExporter.py
 
 ### Optional Configuration
 
-| Variable                          | Description                                              | Example                                        |
-| --------------------------------- | -------------------------------------------------------- | ---------------------------------------------- |
-| `DOUBLE_ZERO_FEES_ADDRESS`        | Address to monitor for balance tracking                  | `11111111111111111111111111111111`             |
-| `STAKE_ACCOUNT_PUBKEY`            | Specific stake account to monitor                        | `YourStakeAccount...`                          |
-| `EXPORTER_HOSTNAME`               | Stable hostname label for metrics                        | `validator-1`                                  |
-| `STAKED_IDENTITY_PUBKEY`          | Primary identity pubkey (failover role)                  | `YourPrimaryIdentity...`                       |
-| `UNSTAKED_IDENTITY_PUBKEY`        | Backup identity pubkey (failover role)                   | `YourBackupIdentity...`                        |
-| `JPOOL_BOND_WITHDRAWER_AUTHORITY` | Bonds withdrawer authority PDA for JPool bond monitoring | `7cgg6KhPd1G8oaoB48RyPDWu7uZs51jUpDYB3eq4VebH` |
+| Variable                    | Description                                                    | Example                            |
+| --------------------------- | -------------------------------------------------------------- | ---------------------------------- |
+| `DOUBLE_ZERO_FEES_ADDRESS`  | Address to monitor for balance tracking                        | `11111111111111111111111111111111` |
+| `STAKE_ACCOUNT_PUBKEY`      | Specific stake account to monitor                              | `YourStakeAccount...`              |
+| `EXPORTER_HOSTNAME`         | Stable hostname label for metrics                              | `validator-1`                      |
+| `STAKED_IDENTITY_PUBKEY`    | Primary identity pubkey (failover role)                        | `YourPrimaryIdentity...`           |
+| `UNSTAKED_IDENTITY_PUBKEY`  | Backup identity pubkey (failover role)                         | `YourBackupIdentity...`            |
+| `JPOOL_LEGACY_BOND_ADDRESS` | Legacy bond account whose total SOL balance is monitored       | `YourLegacyBondAccount`            |
+| `JPOOL_JSOL_BOND_ADDRESS`   | JSOL SPL token vault address, not the validator-bond state PDA | `YourJsolBondTokenVault`           |
 
 `SOLANA_CLIENT` is optional and defaults to `agave`; use `jito`, `frankendancer`, or `firedancer` for those deployments. Optional `SOLANA_CLUSTER` asserts the cluster detected from the local genesis hash.
 
@@ -154,7 +155,8 @@ The exporter provides the following Prometheus metrics:
 
 - `solana_account_balance` - Validator account balance (in SOL)
 - `solana_double_zero_balance` - Balance of monitored address (in SOL, if configured)
-- `solana_jpool_bond_balance` - JPool validator bond balance (in SOL, if configured)
+- `solana_legacy_jpool_bond_balance` - Legacy JPool bond account balance in SOL, including rent (if configured)
+- `solana_jpool_jsol_bond_balance` - Actual JPool bond token vault balance in JSOL (if configured)
 
 ### Timing Metrics
 
@@ -540,8 +542,8 @@ Validator Identity: [`HMk1qny4fvMnajErxjXG5kT89JKV4cx1PKa9zhQBF9ib`](https://sol
 `SOLANA_RPC_URL` must address the local validator. Identity-dependent metrics follow
 its live `getIdentity`, including failovers. If that call fails, those observations
 are unavailable; the configured identity is not substituted. `SOLANA_PUBLIC_RPC_URL`
-remains an independent cluster reference and a source for stake and JPOOL account
-scans. Both RPCs must report the same genesis hash. No remote-validator observation
+remains an independent cluster reference and a source for stake scans and JPool
+account balances. Both RPCs must report the same genesis hash. No remote-validator observation
 mode is provided.
 
 Production is collected at `finalized` commitment for an explicit epoch-start to
@@ -567,10 +569,22 @@ The exporter also publishes:
 Failures and malformed data produce `NaN`, not a fabricated zero or stale count.
 A valid empty production map means zero scheduled opportunities and zero misses;
 its success/skip ratios are `NaN`. Slot timing uses a monotonic clock and tolerates
-stalls or backwards slot movement. Stake and optional JPOOL scans run on the first
-poll and then every fifth poll. JPOOL remains opt-in through
-`JPOOL_BOND_WITHDRAWER_AUTHORITY`; a failed scan is unavailable, while a successful
-empty scan is zero. Its balance is the sum of matching stake-account lamports.
+stalls or backwards slot movement. Stake scans run on the first poll and then every
+fifth poll. The two JPool bond metrics are independently optional and read from the
+same-cluster public RPC at finalized commitment on each poll:
+
+- `JPOOL_LEGACY_BOND_ADDRESS` uses `getBalance` to report the legacy bond account's
+  total SOL balance, including its rent reserve, as `solana_legacy_jpool_bond_balance`.
+- `JPOOL_JSOL_BOND_ADDRESS` identifies the bond's SPL token vault. Parsed
+  `getAccountInfo` validates the token program, JSOL mint, and 9-decimal token amount
+  before reporting `solana_jpool_jsol_bond_balance` in actual JSOL units. A successful
+  account read with `value: null` means the vault has not been created and reports zero.
+
+Startup, RPC failures, malformed data, and a mismatched reference cluster produce
+`NaN`. Valid zero balances remain zero. The former `JPOOL_BOND_ADDRESS`,
+`JPOOL_BOND_WITHDRAWER_AUTHORITY`, and `solana_jpool_bond_balance` names have no aliases;
+update configuration and alert queries to the names above.
+
 `solana_pending_stake` remains a legacy balance-minus-active-stake estimate, including
 rent and inactive balances; it is not an admission or precise activation metric.
 Vote-account balance alone does not prove Alpenglow admission or VAT coverage.

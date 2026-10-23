@@ -103,20 +103,31 @@ def test_stake_scan_cadence(node, rpc_mock):
     assert rpc_mock[0]["scans"] == 3
 
 
-def test_jpool_optional_and_failed_scan(node, rpc_mock, monkeypatch):
-    """Keep the bond feature opt-in and never publish a failed scan as an empty bond."""
-    assert not hasattr(SolanaExporter("fromEnv"), "jpool_bond_balance")
-    monkeypatch.setenv("JPOOL_BOND_WITHDRAWER_AUTHORITY", "WITHDRAWER")
+def test_jpool_optional_and_failed_balance(node, rpc_mock, monkeypatch):
+    """Each configured JPool balance is optional and failed reads become unknown."""
+    exporter = SolanaExporter("fromEnv")
+    assert not hasattr(exporter, "legacy_jpool_bond_balance")
+    assert not hasattr(exporter, "jpool_jsol_bond_balance")
+
+    monkeypatch.setenv("JPOOL_LEGACY_BOND_ADDRESS", "LEGACY_BOND")
     exporter = SolanaExporter("fromEnv")
     exporter.collect_metrics()
-    assert exporter.jpool_bond_balance._value.get() == 0
-    rpc_mock[0]["fail"].add("getProgramAccounts")
-    exporter._get_jpool_bond_balance()
-    assert math.isnan(exporter.jpool_bond_balance._value.get())
+    assert exporter.legacy_jpool_bond_balance._value.get() == 2
+    assert not hasattr(exporter, "jpool_jsol_bond_balance")
+
+    rpc_mock[0]["fail"].add("getBalance")
+    exporter._get_legacy_jpool_bond_balance()
+    assert math.isnan(exporter.legacy_jpool_bond_balance._value.get())
     payload = rpc_mock[1].call_args.kwargs["json"]
-    filters = payload["params"][1]["filters"]
-    assert {"memcmp": {"offset": 44, "bytes": "WITHDRAWER"}} in filters
-    assert {"memcmp": {"offset": 124, "bytes": "VOTE"}} in filters
+    assert payload["method"] == "getBalance"
+    assert payload["params"] == ["LEGACY_BOND", {"commitment": "finalized"}]
+
+    monkeypatch.delenv("JPOOL_LEGACY_BOND_ADDRESS")
+    monkeypatch.setenv("JPOOL_JSOL_BOND_ADDRESS", "JSOL_BOND")
+    exporter = SolanaExporter("fromEnv")
+    exporter.collect_metrics()
+    assert exporter.jpool_jsol_bond_balance._value.get() == 0
+    assert not hasattr(exporter, "legacy_jpool_bond_balance")
 
 
 @pytest.mark.parametrize("stats", [[1, 2], [-1, 0], [True, 0], [1], "bad"])

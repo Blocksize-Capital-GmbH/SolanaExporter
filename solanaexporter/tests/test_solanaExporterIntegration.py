@@ -52,20 +52,41 @@ def test_failover_changes_info_and_schedule(node, rpc_mock):
     )
 
 
-def test_jpool_balance_sum_and_exposition(node, rpc_mock, monkeypatch):
-    """Bond balances sum matching stake accounts and are exposed alongside core metrics."""
-    monkeypatch.setenv("JPOOL_BOND_WITHDRAWER_AUTHORITY", "WITHDRAWER")
+def test_jpool_dual_balance_and_exposition(node, rpc_mock, monkeypatch):
+    """Expose finalized SOL and JSOL balances with their distinct metric names."""
+    legacy = "HLtGiiWymtbbmZuDhqDzRSFFg68tF8RouEYxkNaR8rsm"
+    jsol = "JSOL_VAULT"
+    monkeypatch.setenv("JPOOL_LEGACY_BOND_ADDRESS", legacy)
+    monkeypatch.setenv("JPOOL_JSOL_BOND_ADDRESS", jsol)
     exporter = SolanaExporter("fromEnv")
-    response = Mock(status_code=200)
-    response.json.return_value = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "result": [{"account": {"lamports": 1_250_000_000}}, {"account": {"lamports": 2_750_000_000}}],
+    rpc_mock[0]["account_info"] = {
+        "value": {
+            "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "data": {
+                "parsed": {
+                    "type": "account",
+                    "info": {
+                        "mint": "7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn",
+                        "tokenAmount": {"amount": "4123140000", "decimals": 9},
+                    },
+                }
+            },
+        }
     }
+    response = Mock(status_code=200)
     with patch("requests.post", return_value=response):
-        exporter._get_jpool_bond_balance()
-    assert exporter.jpool_bond_balance._value.get() == 4
-    assert b"solana_jpool_bond_balance 4.0" in generate_latest(exporter.registry)
+        response.json.side_effect = [
+            {"jsonrpc": "2.0", "id": 1, "result": {"value": 5_701_782_990}},
+            {"jsonrpc": "2.0", "id": 1, "result": rpc_mock[0]["account_info"]},
+        ]
+        exporter._get_legacy_jpool_bond_balance()
+        exporter._get_jpool_jsol_bond_balance()
+    exposition = generate_latest(exporter.registry)
+    assert exporter.legacy_jpool_bond_balance._value.get() == 5.70178299
+    assert exporter.jpool_jsol_bond_balance._value.get() == 4.12314
+    assert b"solana_legacy_jpool_bond_balance 5.70178299" in exposition
+    assert b"solana_jpool_jsol_bond_balance 4.12314" in exposition
+    assert b"solana_jpool_bond_balance" not in exposition
 
 
 def test_optional_balance_and_version_exposition(node, rpc_mock, monkeypatch):

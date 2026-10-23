@@ -21,7 +21,11 @@ def node(monkeypatch):
         "VERSION": "stale-config-version",
         "SOLANA_CLUSTER": "testnet",
     }
-    for key in ("DOUBLE_ZERO_FEES_ADDRESS", "JPOOL_BOND_WITHDRAWER_AUTHORITY"):
+    for key in (
+        "DOUBLE_ZERO_FEES_ADDRESS",
+        "JPOOL_LEGACY_BOND_ADDRESS",
+        "JPOOL_JSOL_BOND_ADDRESS",
+    ):
         monkeypatch.delenv(key, raising=False)
     for key, value in values.items():
         monkeypatch.setenv(key, value)
@@ -51,6 +55,7 @@ def rpc_mock():
                 "getRecentPerformanceSamples": [{"numSlots": 300, "samplePeriodSecs": 60}],
                 "getSlot": state["slot"] + (5 if "reference" in url else 0),
                 "getBalance": {"value": 2_000_000_000},
+                "getAccountInfo": {"value": None},
                 "getVoteAccounts": {
                     "current": [
                         {
@@ -80,6 +85,10 @@ def rpc_mock():
                 result = state["raw_production"]
             if method == "getVoteAccounts" and "votes" in state:
                 result = state["votes"]
+            if method == "getAccountInfo" and "account_info" in state:
+                result = state["account_info"]
+            if method == "getBalance" and "balance" in state:
+                result = state["balance"]
             if method == "getGenesisHash" and "reference" in url and state.get("wrong_cluster"):
                 result = "wrong-cluster"
             responses.append({"jsonrpc": "2.0", "id": request["id"], "result": result})
