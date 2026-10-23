@@ -32,11 +32,14 @@ OPTIONAL_CONFIG_KEYS = {
     "cluster": "SOLANA_CLUSTER",
     "client": "SOLANA_CLIENT",
     "double_zero_fees_address": "DOUBLE_ZERO_FEES_ADDRESS",
-    "jpool_bond_withdrawer_authority": "JPOOL_BOND_WITHDRAWER_AUTHORITY",
+    "jpool_legacy_bond_address": "JPOOL_LEGACY_BOND_ADDRESS",
+    "jpool_jsol_bond_address": "JPOOL_JSOL_BOND_ADDRESS",
 }
 
 # All configuration keys combined
 ALL_CONFIG_KEYS = {**REQUIRED_CONFIG_KEYS, **OPTIONAL_CONFIG_KEYS}
+JSOL_MINT = "7Q2afV64in6N6SeZsAAB81TJzwDoD6zpqmHkzi9Dcavn"
+TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 
 
 class SolanaExporter(RPCExporter):
@@ -172,15 +175,22 @@ class SolanaExporter(RPCExporter):
             registry=self.registry,
         )
 
-        self._has_jpool_bond = (
-            hasattr(self.config, "jpool_bond_withdrawer_authority") and self.config.jpool_bond_withdrawer_authority
-        )
-        if self._has_jpool_bond:
-            self.jpool_bond_balance = Gauge(
-                name="solana_jpool_bond_balance",
-                documentation="JPool validator bond balance (in SOL)",
+        self._has_legacy_jpool_bond = bool(getattr(self.config, "jpool_legacy_bond_address", None))
+        if self._has_legacy_jpool_bond:
+            self.legacy_jpool_bond_balance = Gauge(
+                name="solana_legacy_jpool_bond_balance",
+                documentation="SOL balance of the configured legacy JPool bond account, including rent",
                 registry=self.registry,
             )
+            self.legacy_jpool_bond_balance.set(float("nan"))
+        self._has_jpool_jsol_bond = bool(getattr(self.config, "jpool_jsol_bond_address", None))
+        if self._has_jpool_jsol_bond:
+            self.jpool_jsol_bond_balance = Gauge(
+                name="solana_jpool_jsol_bond_balance",
+                documentation="Actual JSOL token balance of the configured JPool bond vault",
+                registry=self.registry,
+            )
+            self.jpool_jsol_bond_balance.set(float("nan"))
 
         for attribute, name, description in [
             ("leader_slots", "solana_leader_slots", "Scheduled slots in the production range"),
@@ -249,6 +259,10 @@ class SolanaExporter(RPCExporter):
             "vote_identity_match",
         ):
             getattr(self, name).set(float("nan"))
+        for name in ("legacy_jpool_bond_balance", "jpool_jsol_bond_balance"):
+            metric = getattr(self, name, None)
+            if metric is not None:
+                metric.set(float("nan"))
         self._invalidate_production()
         self.health_status.set(0)
         self.sync_status.set(0)
@@ -443,11 +457,11 @@ class SolanaExporter(RPCExporter):
         self.programAccountsCallCounter += 1
         if self.programAccountsCallCounter % 5 == 0:
             self.stake_accounts = self._get_stake_accounts() if reference_ok else []
-            if self._has_jpool_bond:
-                if reference_ok:
-                    self._get_jpool_bond_balance()
-                else:
-                    self.jpool_bond_balance.set(float("nan"))
+        if reference_ok:
+            if self._has_legacy_jpool_bond:
+                self._get_legacy_jpool_bond_balance()
+            if self._has_jpool_jsol_bond:
+                self._get_jpool_jsol_bond_balance()
         votes = results.get("votes")
         votes = votes if self._valid_votes(votes) else None
         self._update_stake_metrics(votes)
@@ -679,51 +693,66 @@ class SolanaExporter(RPCExporter):
                 self.credits_earned.set(0)
                 return
 
-    def _get_jpool_bond_balance(self) -> None:
-        """Query and update the JPool bond balance from on-chain stake accounts.
-
-        Bond-funded stake accounts are identified by their withdrawal authority
-        (the bonds_withdrawer_authority PDA) and voter (the validator's vote account).
-        Stake account layout offsets: withdrawer at byte 44, voter at byte 124.
-        """
-        program_id = "Stake11111111111111111111111111111111111111"
-        filters = [
-            {"dataSize": 200},
-            {
-                "memcmp": {
-                    "offset": 44,
-                    "bytes": self.config.jpool_bond_withdrawer_authority,
-                }
-            },
-            {
-                "memcmp": {
-                    "offset": 124,
-                    "bytes": self.config.vote_pubkey,
-                }
-            },
-        ]
+    def _get_legacy_jpool_bond_balance(self) -> None:
+        """Read the legacy bond account's finalized balance and convert lamports to SOL."""
+        self.legacy_jpool_bond_balance.set(float("nan"))
         request = JsonRPCRequest(
-            method="getProgramAccounts",
-            params=[
-                program_id,
-                {"filters": filters, "encoding": "base64"},
-            ],
+            method="getBalance",
+            params=[self.config.jpool_legacy_bond_address, {"commitment": "finalized"}],
         )
 
         responses: List[JsonRPCResponse] = send_rpc(
             rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger
         )
 
-        self.jpool_bond_balance.set(float("nan"))
-        if len(responses) != 1 or not responses[0].is_successful() or not isinstance(responses[0].result, list):
+        if len(responses) != 1 or not responses[0].is_successful() or not isinstance(responses[0].result, dict):
             return
-        total_lamports = 0
-        for account in responses[0].result:
-            value = account.get("account", {}).get("lamports") if isinstance(account, dict) else None
-            if type(value) is not int or value < 0:
-                return
-            total_lamports += value
-        self.jpool_bond_balance.set(total_lamports / 1_000_000_000)
+        lamports = responses[0].result.get("value")
+        if type(lamports) is not int or lamports < 0:
+            return
+        self.legacy_jpool_bond_balance.set(lamports / 1_000_000_000)
+
+    def _get_jpool_jsol_bond_balance(self) -> None:
+        """Read actual JSOL units, distinguishing an absent token vault from a failed read."""
+        self.jpool_jsol_bond_balance.set(float("nan"))
+        request = JsonRPCRequest(
+            method="getAccountInfo",
+            params=[self.config.jpool_jsol_bond_address, {"commitment": "finalized", "encoding": "jsonParsed"}],
+        )
+        responses = send_rpc(rpc_url=self.public_rpc_url, rpc_requests=request, logger=self.logger)
+        if len(responses) != 1 or not responses[0].is_successful() or not isinstance(responses[0].result, dict):
+            return
+        result = responses[0].result
+        if "value" not in result:
+            return
+        account = result["value"]
+        if account is None:
+            self.jpool_jsol_bond_balance.set(0)
+            return
+        if not isinstance(account, dict) or account.get("owner") != TOKEN_PROGRAM_ID:
+            return
+        data = account.get("data")
+        parsed = data.get("parsed") if isinstance(data, dict) else None
+        if not isinstance(parsed, dict) or parsed.get("type") != "account":
+            return
+        info = parsed.get("info")
+        if not isinstance(info, dict) or info.get("mint") != JSOL_MINT:
+            return
+        token_amount = info.get("tokenAmount")
+        if not isinstance(token_amount, dict):
+            return
+        amount, decimals = token_amount.get("amount"), token_amount.get("decimals")
+        if (
+            not isinstance(amount, str)
+            or not amount.isascii()
+            or not amount.isdecimal()
+            or len(amount) > 20
+            or int(amount) > 2**64 - 1
+            or type(decimals) is not int
+            or decimals != 9
+        ):
+            return
+        self.jpool_jsol_bond_balance.set(int(amount) / 1_000_000_000)
 
     def _update_build_info(self) -> None:
         """Update build information with version and label as string values."""
